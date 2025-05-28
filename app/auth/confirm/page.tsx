@@ -13,12 +13,12 @@ export default function ConfirmEmail() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const [email, setEmail] = useState<string | null>(null); // State to hold the email
+  const [email, setEmail] = useState<string | null>(null);
 
   useEffect(() => {
     const token = searchParams.get("token");
     const type = searchParams.get("type");
-    const emailFromUrl = searchParams.get("email"); // Try to get email from URL
+    const emailFromUrl = searchParams.get("email");
 
     if (emailFromUrl) {
       setEmail(emailFromUrl);
@@ -27,7 +27,7 @@ export default function ConfirmEmail() {
     async function confirmSignUp() {
       if (token && type === "signup" && email) {
         setLoading(true);
-        const { error } = await supabase.auth.verifyOtp({ token, type, email }); // Include email
+        const { error } = await supabase.auth.verifyOtp({ token, type, email });
 
         if (error) {
           console.error("Email confirmation error:", error);
@@ -42,7 +42,7 @@ export default function ConfirmEmail() {
             title: "Success",
             description: "Email confirmed! You can now sign in.",
           });
-          router.push("/login"); // Redirect to your login page
+          router.push("/login");
         }
         setLoading(false);
       } else {
