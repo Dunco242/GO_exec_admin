@@ -234,6 +234,7 @@ export default function TasksPage() {
     setNewTaskData(prev => ({ ...prev, [id]: value }));
     if (id === "client_name") {
       setClientSearchTerm(value);
+      setShowClientSuggestions(true);
     }
   };
 
