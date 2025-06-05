@@ -1,0 +1,7 @@
+.rbc-addons-drag-and-drop .rbc-event {
+  cursor: move;
+}
+
+.rbc-day-slot .rbc-event {
+  position: absolute !important; /* Fixes layout issues */
+}

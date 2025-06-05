@@ -55,7 +55,7 @@ const TotalClientsCard: React.FC = () => {
           setTotalClients(data.length)
         }
       } catch (error) {
-        console.error("An unexpected error occurred:", error)
+          console.error("An unexpected error occurred:", error)
       }
     }
 
@@ -169,17 +169,17 @@ const UpcomingMeetingsCard: React.FC = () => {
       if (!userId) return
 
       try {
-        const now = new Date()
-        const tomorrowEnd = new Date()
-        tomorrowEnd.setDate(now.getDate() + 2)
-        tomorrowEnd.setHours(23, 59, 59, 999)
+        const now = new Date();
+        const tomorrowEnd = new Date();
+        tomorrowEnd.setDate(now.getDate() + 2);
+        tomorrowEnd.setHours(23, 59, 59, 999);
 
         const { data, error } = await supabase
           .from("calendar_events")
           .select("id")
           .eq("user_id", userId)
-          .gte("date", now.toISOString().split("T")[0])
-          .lte("date", tomorrowEnd.toISOString().split("T")[0])
+          .gte("date", now.toISOString()) // ✅ Use full ISO string
+          .lte("date", tomorrowEnd.toISOString())
 
         if (error) {
           console.error("Error fetching upcoming meetings:", error)
@@ -381,7 +381,7 @@ const UpcomingTasksCard: React.FC = () => {
           <ul>
             {upcomingTasks.map((task) => (
               <li key={task.id} className="py-1">
-                {task.title} - {task.due_date ? format(parseISO(task.due_date), "MMM dd, HH:mm") : "No due date"}
+                {task.title} - {task.due_date ? format(parseISO(task.due_date), "MMM dd, HH:mm") : "N/A"}
               </li>
             ))}
           </ul>
@@ -417,12 +417,12 @@ const ClientDistributionCard: React.FC = () => {
         if (error) {
           console.error("Error fetching client types:", error)
         } else {
-          const distribution: Record<string, number> = {}
+          const counts: Record<string, number> = {} // Initialize counts here
           data.forEach((client) => {
             const type = (client as any).type || "Unknown"
-            distribution[type] = (distribution[type] || 0) + 1
+            counts[type] = (counts[type] || 0) + 1
           })
-          setDistributionData(distribution)
+          setDistributionData(counts)
         }
       } catch (error) {
         console.error("An unexpected error occurred:", error)
@@ -555,14 +555,15 @@ const ReportsDashboard: React.FC = () => {
         let data: any[] | null = null
         let error: any = null
 
+        // Declare toDateISO here to ensure it's always accessible
         const fromDateISO = dateRange.from ? dateRange.from.toISOString() : null
-        const toDateISO = dateRange.to ? dateRange.to.toISOString() : null
+        const toDateISO = dateRange.to ? dateRange.to.toISOString() : null // Corrected: Ensure toDateISO is initialized
 
         switch (reportType) {
           case "client-status":
             query = supabase.from("clients").select("name, status, last_contact").eq("user_id", userId)
-            if (fromDateISO) query = query.gte("created_at", fromDateISO)
-            if (toDateISO) query = query.lte("created_at", toDateISO)
+            if (fromDateISO) query = query.gte("last_contact", fromDateISO)
+            if (toDateISO) query = query.lte("last_contact", toDateISO)
             ;({ data, error } = await query)
             break
           case "task-progress":
@@ -588,12 +589,13 @@ const ReportsDashboard: React.FC = () => {
         }
 
         if (error) {
-          console.error(`Error fetching ${reportType} report:`, error)
+          // Improved error logging
+          console.error(`Error fetching ${reportType} report:`, error.message || error);
         } else if (data) {
           setReportData(data)
         }
-      } catch (e) {
-        console.error("An unexpected error occurred while fetching report data:", e)
+      } catch (e: any) { // Catch unexpected errors
+        console.error("An unexpected error occurred while fetching report data:", e.message || e);
       } finally {
         setLoadingReport(false)
       }
@@ -631,9 +633,9 @@ const ReportsDashboard: React.FC = () => {
             <TableBody>
               {reportData.map((row, index) => (
                 <TableRow key={index}>
-                  <TableCell>{row.name}</TableCell>
-                  <TableCell>{row.status}</TableCell>
-                  <TableCell>{row.last_contact ? format(parseISO(row.last_contact), "MMM dd, yyyy") : "N/A"}</TableCell>
+                  <TableCell>{row.name || "N/A"}</TableCell>
+                  <TableCell>{row.status || "N/A"}</TableCell>
+                  <TableCell>{row.last_contact ? format(parseISO(row.last_contact), "MMM dd,yyyy") : "N/A"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -654,11 +656,11 @@ const ReportsDashboard: React.FC = () => {
             <TableBody>
               {reportData.map((row, index) => (
                 <TableRow key={index}>
-                  <TableCell>{row.title}</TableCell>
-                  <TableCell>{row.status}</TableCell>
-                  <TableCell>{row.priority}</TableCell>
-                  <TableCell>{row.progress}%</TableCell>
-                  <TableCell>{row.due_date ? format(parseISO(row.due_date), "MMM dd, yyyy HH:mm") : "N/A"}</TableCell>
+                  <TableCell>{row.title || "N/A"}</TableCell>
+                  <TableCell>{row.status || "N/A"}</TableCell>
+                  <TableCell>{row.priority || "N/A"}</TableCell>
+                  <TableCell>{(row.progress !== null && row.progress !== undefined) ? `${row.progress}%` : "N/A"}</TableCell>
+                  <TableCell>{row.due_date ? format(parseISO(row.due_date), "MMM dd,yyyy HH:mm") : "N/A"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -678,10 +680,10 @@ const ReportsDashboard: React.FC = () => {
             <TableBody>
               {reportData.map((row, index) => (
                 <TableRow key={index}>
-                  <TableCell>{row.subject}</TableCell>
-                  <TableCell>{row.sender}</TableCell>
-                  <TableCell>{row.sent_at ? format(parseISO(row.sent_at), "MMM dd, yyyy HH:mm") : "N/A"}</TableCell>
-                  <TableCell>{row.unread ? "Yes" : "No"}</TableCell>
+                  <TableCell>{row.subject || "N/A"}</TableCell>
+                  <TableCell>{row.sender || "N/A"}</TableCell>
+                  <TableCell>{row.sent_at ? format(parseISO(row.sent_at), "MMM dd,yyyy HH:mm") : "N/A"}</TableCell>
+                  <TableCell>{(row.unread !== null && row.unread !== undefined) ? (row.unread ? "Yes" : "No") : "N/A"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -701,11 +703,11 @@ const ReportsDashboard: React.FC = () => {
             <TableBody>
               {reportData.map((row, index) => (
                 <TableRow key={index}>
-                  <TableCell>{row.title}</TableCell>
-                  <TableCell>{row.type}</TableCell>
-                  <TableCell>{row.status}</TableCell>
+                  <TableCell>{row.title || "N/A"}</TableCell>
+                  <TableCell>{row.type || "N/A"}</TableCell>
+                  <TableCell>{row.status || "N/A"}</TableCell>
                   <TableCell>
-                    {row.created_at ? format(parseISO(row.created_at), "MMM dd, yyyy HH:mm") : "N/A"}
+                    {row.created_at ? format(parseISO(row.created_at), "MMM dd,yyyy HH:mm") : "N/A"}
                   </TableCell>
                 </TableRow>
               ))}
@@ -804,11 +806,11 @@ const RecentEmails: React.FC = () => {
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex-1 text-sm">
-                  <p className="font-semibold">{email.subject}</p>
-                  <p className="text-muted-foreground">{email.sender}</p>
+                  <p className="font-semibold">{email.subject || "No Subject"}</p>
+                  <p className="text-muted-foreground">{email.sender || "Unknown Sender"}</p>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {email.created_at ? format(parseISO(email.created_at), "MMM dd, HH:mm") : ""}
+                  {email.created_at ? format(parseISO(email.created_at), "MMM dd, HH:mm") : "N/A"}
                 </div>
               </li>
             ))}

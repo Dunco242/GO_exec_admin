@@ -1,634 +1,613 @@
 "use client"
 
-import { useState, ChangeEvent, useCallback, useEffect, useMemo } from "react"
-import { FileText, CheckSquare, Calendar as CalendarIcon, Mail, Plus, HelpCircle } from "lucide-react" // Aliased Calendar to CalendarIcon, added HelpCircle
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // Ensure Card components are imported correctly
+import { useState, ChangeEvent, useCallback, useEffect } from "react"
+import { FileText, CheckSquare, Calendar as CalendarIcon, Mail, Plus, HelpCircle } from "lucide-react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { MobileNav } from "@/components/mobile-nav"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
-// import { useStore } from "@/lib/store" // Removed Zustand import as data will be fetched from Supabase
-import { parse, isValid, format, addMinutes, addHours, addDays } from "date-fns" // Import date-fns for robust date parsing
-import { Label } from "@/components/ui/label" // Corrected Label import
-import { Input } from "@/components/ui/input" // Ensure Input is imported
-import { supabase } from '@/lib/supabaseClient'; // Import Supabase client
-import { User } from '@supabase/supabase-js'; // Import User type from Supabase client
+import { parse, isValid, addMinutes, addHours } from "date-fns"
+import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
+import { supabase } from '@/lib/supabaseClient'
+import { User } from '@supabase/supabase-js'
+import { Skeleton } from "@/components/ui/skeleton"
+import { Badge } from "@/components/ui/badge"
 
-// Define interfaces to match your Supabase table schemas for tasks and calendar_events
-// These interfaces are for the data shape when inserting into Supabase
 interface TaskInsert {
-  user_id: string;
-  title: string;
-  priority: "High" | "Medium" | "Low";
-  status: "Not Started" | "In Progress" | "Pending" | "Completed";
-  description?: string | null;
-  due_date?: string | null; // ISO string (TIMESTAMPTZ)
-  client_name?: string | null;
-  client_id?: number | null;
-  assigned_to_name?: string | null;
-  assigned_to_avatar?: string | null;
-  assigned_to_initials?: string | null;
-  progress?: number;
-  tags?: string[] | null;
-  source?: string;
+  user_id: string
+  title: string
+  priority: "High" | "Medium" | "Low"
+  status: "Not Started" | "In Progress" | "Pending" | "Completed"
+  description?: string | null
+  due_date?: string | null
+  client_name?: string | null
+  client_id?: number | null
+  assigned_to_name?: string | null
+  assigned_to_avatar?: string | null
+  assigned_to_initials?: string | null
+  progress?: number
+  tags?: string[] | null
+  source?: string
 }
 
 interface CalendarEventInsert {
-  // user_id: string; // Removed as per schema, assuming RLS handles user context for calendar_events
-  title: string;
-  date: string; // ISO string (TIMESTAMPTZ)
-  color: string;
-  type: string;
-  end_time: string; // ISO string (TIMESTAMPTZ)
-  description?: string | null;
-  client_name?: string | null;
-  location?: string | null;
-  source?: string;
+  title: string
+  date: string
+  color: string
+  type: string
+  end_time: string
+  description?: string | null
+  client_name?: string | null
+  location?: string | null
+  source?: string
 }
 
-// Interface for the data that will be stored in imported_notes table in Supabase
 interface ImportedNote {
-  id: number;
-  user_id: string;
-  content: string;
-  import_date: string; // ISO string for TIMESTAMPTZ
-  processed: boolean;
-  extracted_items: { // JSONB column
-    tasks: number[]; // Array of task IDs
-    events: number[]; // Array of event IDs
-    emails: number[]; // Array of email IDs
-  };
-  created_at: string;
-  updated_at: string;
+  id: number
+  user_id: string
+  content: string
+  import_date: string
+  processed: boolean
+  extracted_items: {
+    tasks: number[]
+    events: number[]
+    emails: number[]
+  }
+  created_at: string
+  updated_at: string
 }
 
-// This component handles the file input and processing logic
-export function ImportNotes() {
-  const [inputText, setInputText] = useState("");
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [user, setUser] = useState<User | null>(null); // State to hold the user object
-  const [userLoading, setUserLoading] = useState(true); // State to track user loading
-  const { toast } = useToast();
-  const [importedNotesHistory, setImportedNotesHistory] = useState<ImportedNote[]>([]); // State for imported notes history
+const MAX_RETRIES = 3
+const RETRY_DELAY = 1000
 
-  // Effect to get the current user's ID
+const ImportNotesCard = () => {
+  const [inputText, setInputText] = useState("")
+  const [fileName, setFileName] = useState<string | null>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
+  const [userLoading, setUserLoading] = useState(true)
+  const { toast } = useToast()
+  const [importHistory, setImportHistory] = useState<ImportedNote[]>([])
+
   useEffect(() => {
-    const getSupabaseUser = async () => {
+    const fetchUser = async () => {
       try {
-        const { data: { user: supabaseUser }, error } = await supabase.auth.getUser();
-        if (error) {
-          console.error("Error getting Supabase user:", error);
-          setUser(null);
-        } else {
-          setUser(supabaseUser);
-        }
-      } catch (e) {
-        console.error("Unexpected error getting Supabase user:", e);
-        setUser(null);
+        const { data: { user: supabaseUser }, error } = await supabase.auth.getUser()
+        if (error) throw error
+        setUser(supabaseUser)
+      } catch (error) {
+        console.error("Error fetching user:", error)
+        toast({
+          title: "Authentication Error",
+          description: "Failed to fetch user information",
+          variant: "destructive"
+        })
       } finally {
-        setUserLoading(false);
+        setUserLoading(false)
       }
-    };
-    getSupabaseUser();
-  }, []); // Run once on component mount
-
-  // Fetch imported notes history from Supabase
-  const fetchImportedNotesHistory = useCallback(async () => {
-    if (!user?.id) {
-      setImportedNotesHistory([]); // Clear history if no user
-      return;
     }
+    fetchUser()
+  }, [toast])
+
+  const fetchImportHistory = useCallback(async () => {
+    if (!user?.id) return
+
     try {
       const { data, error } = await supabase
         .from('imported_notes')
         .select('*')
         .eq('user_id', user.id)
-        .order('import_date', { ascending: false });
+        .order('import_date', { ascending: false })
+        .limit(10)
 
-      if (error) {
-        console.error("Error fetching imported notes history:", error);
-        toast({ title: 'Error', description: `Failed to load import history: ${error.message}`, variant: 'destructive' });
-      } else if (data) {
-        setImportedNotesHistory(data as ImportedNote[]);
-      }
+      if (error) throw error
+      setImportHistory(data || [])
     } catch (error) {
-      console.error("An unexpected error occurred while fetching import history:", error);
-      toast({ title: 'Error', description: 'An unexpected error occurred while loading import history.', variant: 'destructive' });
+      console.error("Error fetching import history:", error)
+      toast({
+        title: "Error",
+        description: "Failed to load import history",
+        variant: "destructive"
+      })
     }
-  }, [user?.id, toast]);
+  }, [user?.id, toast])
 
-  // Fetch history when user becomes available
   useEffect(() => {
-    if (user?.id) {
-      fetchImportedNotesHistory();
-    }
-  }, [user?.id, fetchImportedNotesHistory]);
-
+    fetchImportHistory()
+  }, [fetchImportHistory])
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target?.result;
-        if (typeof text === 'string') {
-          setInputText(text);
-        }
-      };
-      reader.readAsText(file);
-    } else {
-      setFileName(null);
-      setInputText("");
+    const file = event.target.files?.[0]
+    if (!file) {
+      setFileName(null)
+      setInputText("")
+      return
     }
-  };
+
+    setFileName(file.name)
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const text = e.target?.result
+      if (typeof text === 'string') {
+        setInputText(text)
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  const isValidEvent = (event: CalendarEventInsert): boolean => {
+    try {
+      if (!event.title || !event.date || !event.end_time) return false
+      const start = new Date(event.date)
+      const end = new Date(event.end_time)
+      return isValid(start) && isValid(end) && start < end
+    } catch {
+      return false
+    }
+  }
+
+  const insertWithRetry = async (
+    table: string,
+    data: any,
+    retries = MAX_RETRIES
+  ): Promise<{ data: any, error: any }> => {
+    try {
+      const { data: result, error } = await supabase
+        .from(table)
+        .insert([data])
+        .select('id')
+        .single()
+
+      if (!error) return { data: result, error: null }
+
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return insertWithRetry(table, data, retries - 1)
+      }
+
+      return { data: null, error }
+    } catch (error) {
+      return { data: null, error }
+    }
+  }
 
   const processImport = useCallback(async () => {
     if (!inputText.trim()) {
       toast({
-        title: "Error",
-        description: "Please enter or upload some notes to import.",
-        variant: "destructive",
-      });
-      return;
+        title: "Empty Input",
+        description: "Please enter or upload notes to import",
+        variant: "destructive"
+      })
+      return
     }
-    if (userLoading) {
-      toast({
-        title: "Please Wait",
-        description: "Authenticating user. Please try again in a moment.",
-        variant: "default",
-      });
-      return;
-    }
-    if (!user?.id) {
+
+    if (userLoading || !user?.id) {
       toast({
         title: "Authentication Required",
-        description: "You must be logged in to import notes.",
-        variant: "destructive",
-      });
-      return;
+        description: "Please wait while we verify your session",
+        variant: "default"
+      })
+      return
     }
 
-    setIsProcessing(true);
-    const lines = inputText.split("\n").filter((line) => line.trim() !== "");
-    const extractedTaskIds: number[] = [];
-    const extractedEventIds: number[] = [];
-    const extractedEmailIds: number[] = []; // Placeholder for future email extraction
+    setIsProcessing(true)
+    const lines = inputText.split("\n").filter(line => line.trim() !== "")
+    const extractedTaskIds: number[] = []
+    const extractedEventIds: number[] = []
+    const extractedEmailIds: number[] = []
 
-    let eventsCreatedCount = 0;
-    let tasksCreatedCount = 0;
+    let eventsCreated = 0
+    let tasksCreated = 0
+    let skippedItems = 0
 
     for (const line of lines) {
-      const trimmedLine = line.trim();
-      const bulletRemoved = trimmedLine.startsWith("- ") ? trimmedLine.substring(2) : trimmedLine;
+      try {
+        const trimmedLine = line.trim()
+        const content = trimmedLine.startsWith("- ") ? trimmedLine.substring(2) : trimmedLine
 
-      let parsedDate: Date | null = null;
-      let potentialEndTime: Date | null = null;
-      let extractedTitle = bulletRemoved;
+        // Enhanced date parsing with multiple format support
+        const dateFormats = [
+          "yyyy-MM-dd HH:mm",
+          "MM/dd/yyyy HH:mm",
+          "dd-MM-yyyy HH:mm",
+          "EEE, MMM dd, yyyy HH:mm",
+          "yyyy-MM-dd",
+          "MM/dd/yyyy",
+          "dd-MM-yyyy"
+        ]
 
-      // Regex to capture common date formats at the start of the string, optionally followed by a time
-      // Group 1: Full date part (e.g.,YYYY-MM-DD, MM/DD/YYYY, Mon, May 28, 2025)
-      // Group 6: Optional time part (e.g., 10:30, 10:30 AM, 10:30:00)
-      // Group 10: The rest of the string after date/time
-      const fullDateTimeRegex = /^((\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})|(\d{1,2}-\d{1,2}-\d{4})|(\w{3}, \w{3} \d{1,2}, \d{4}))(\s+(\d{1,2}:\d{2}(:\d{2})?(\s*[AP]M)?))?\s*(.*)$/i;
+        let parsedDate: Date | null = null
+        let extractedTitle = content
 
-      const match = bulletRemoved.match(fullDateTimeRegex);
-
-      if (match) {
-          const datePart = match[1];
-          const timePart = match[7];
-          const ampmPart = match[9];
-          extractedTitle = match[10] || ''; // Update extractedTitle here
-
-          const dateFormatsForParsing = [
-              "yyyy-MM-dd", "MM/dd/yyyy", "dd-MM-yyyy", "EEE, MMM dd,yyyy"
-          ];
-          const timeFormatsForParsing = [
-              "HH:mm", "h:mm a", "H:mm", "HH:mm:ss", "h:mm:ss a"
-          ];
-
-          let tempDate: Date | null = null;
-          for (const df of dateFormatsForParsing) {
-              const candidateDate = parse(datePart, df, new Date());
-              if (isValid(candidateDate)) {
-                  tempDate = candidateDate;
-                  break; // Found a valid date, stop trying other formats
-              }
+        for (const format of dateFormats) {
+          const date = parse(content, format, new Date())
+          if (isValid(date)) {
+            parsedDate = date
+            extractedTitle = content.replace(new RegExp(`^${format.split(' ')[0]}\\s*`), '').trim()
+            break
           }
-          parsedDate = tempDate; // parsedDate is now either a valid Date or null
+        }
 
-          if (parsedDate && isValid(parsedDate) && timePart) {
-              let tempTime: Date | null = null;
-              const fullTimeStr = timePart + (ampmPart ? ` ${ampmPart}` : '');
-
-              for (const tf of timeFormatsForParsing) {
-                  const candidateTime = parse(fullTimeStr.trim(), tf, parsedDate); // Use parsedDate as base
-                  if (isValid(candidateTime)) {
-                      tempTime = candidateTime;
-                      break;
-                  }
-              }
-
-              if (tempTime && isValid(tempTime)) {
-                  parsedDate.setHours(tempTime.getHours(), tempTime.getMinutes(), tempTime.getSeconds());
-                  potentialEndTime = addMinutes(parsedDate, 1);
-              } else if (parsedDate && isValid(parsedDate)) { // If time parsing failed but date is valid
-                  potentialEndTime = addHours(parsedDate, 1);
-                  console.warn(`Time parsing failed for "${fullTimeStr}". Defaulting event end time to 1 hour after start date.`);
-              } else {
-                  potentialEndTime = null; // If parsedDate itself is invalid, potentialEndTime should also be null
-              }
-          } else if (parsedDate && isValid(parsedDate)) {
-              // If only date is present, default to 1 hour duration
-              potentialEndTime = addHours(parsedDate, 1);
-          } else {
-              // If date itself could not be parsed from regex match, ensure parsedDate is null
-              parsedDate = null;
+        if (parsedDate && isValid(parsedDate)) {
+          const endTime = addHours(parsedDate, 1)
+          const eventToInsert: CalendarEventInsert = {
+            title: extractedTitle || "Imported Event",
+            date: parsedDate.toISOString(),
+            end_time: endTime.toISOString(),
+            color: "#3b82f6",
+            type: "Imported",
+            description: `Imported from: "${content}"`,
+            source: "Note Import"
           }
-      }
 
-      // Logic to differentiate between Calendar Event and Task
-      if (parsedDate && isValid(parsedDate)) {
-        // It's an event with a specific date/time extracted
-        let finalEndTimeDate: Date; // Declare as Date object
-        if (potentialEndTime && isValid(potentialEndTime)) {
-            finalEndTimeDate = potentialEndTime;
+          if (!isValidEvent(eventToInsert)) {
+            skippedItems++
+            continue
+          }
+
+          const { data: newEvent, error: eventError } = await insertWithRetry('calendar_events', eventToInsert)
+
+          if (eventError) {
+            console.error("Event insertion error:", eventError)
+            toast({
+              title: "Event Error",
+              description: `Failed to create event: ${extractedTitle}`,
+              variant: "destructive"
+            })
+          } else if (newEvent?.id) {
+            extractedEventIds.push(newEvent.id)
+            eventsCreated++
+          }
         } else {
-            // Fallback if potentialEndTime is invalid or not set, but parsedDate is valid
-            finalEndTimeDate = addMinutes(parsedDate, 60); // Default to 1 hour later
-            console.warn(`Final end time for event "${extractedTitle}" was invalid or not set. Defaulting to 1 hour after start.`);
-        }
+          const taskDueDate = new Date()
+          taskDueDate.setHours(23, 59, 59, 999)
 
-        // --- CRITICAL VALIDATION BEFORE INSERTION ---
-        if (!isValid(parsedDate) || !isValid(finalEndTimeDate)) {
-            console.error("CRITICAL ERROR: Invalid Date object detected for Calendar Event before database insertion. Skipping event.", { parsedDate, finalEndTimeDate, originalLine: bulletRemoved });
-            toast({ title: 'Error', description: `Skipped event: Invalid date detected for "${extractedTitle}". Please check input format.`, variant: 'destructive' });
-            continue; // Skip this line if dates are invalid
-        }
-        // --- END CRITICAL VALIDATION ---
-
-        const dateISO = parsedDate.toISOString();
-        const endTimeISO = finalEndTimeDate.toISOString();
-
-        // --- NEW: Additional validation for ISO strings before insertion ---
-        if (dateISO === "Invalid Date" || endTimeISO === "Invalid Date") {
-            console.error("CRITICAL ERROR: toISOString resulted in 'Invalid Date' string for Calendar Event. Skipping event insertion.", { dateISO, endTimeISO, originalLine: bulletRemoved });
-            toast({ title: 'Error', description: `Skipped event: Generated invalid date string for "${extractedTitle}".`, variant: 'destructive' });
-            continue; // Skip this line if the ISO string is invalid
-        }
-        // --- END NEW VALIDATION ---
-
-        const eventToInsert: CalendarEventInsert = {
-          title: extractedTitle.trim() || "Imported Event",
-          date: dateISO,
-          end_time: endTimeISO,
-          color: "#2660ff",
-          type: "Imported",
-          description: `Imported from notes: "${bulletRemoved}"`,
-          source: "Imported Note",
-        };
-
-        const { data: newEvent, error: eventError } = await supabase
-          .from('calendar_events')
-          .insert([eventToInsert])
-          .select('id')
-          .single();
-
-        if (eventError) {
-          console.error("Error inserting calendar event:", eventError);
-          toast({ title: 'Error', description: `Failed to create calendar event: ${eventError.message || 'Unknown error'}`, variant: 'destructive' });
-        } else if (newEvent?.id) {
-          extractedEventIds.push(newEvent.id);
-          eventsCreatedCount++;
-        }
-      } else {
-        // If parsedDate is null or invalid, treat as a Task
-        console.warn(`Could not parse date for line: "${bulletRemoved}". Treating as a task.`);
-        const today = new Date();
-        // Default due date for tasks: end of today
-        const taskDueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
-
-        // --- CRITICAL VALIDATION BEFORE INSERTION (for tasks) ---
-        if (!isValid(taskDueDate)) {
-            console.error("CRITICAL ERROR: Invalid Date object generated for Task due date before database insertion. Skipping task.", { taskDueDate, originalLine: bulletRemoved });
-            toast({ title: 'Error', description: `Skipped task: Invalid due date generated for "${extractedTitle}". Please check input format.`, variant: 'destructive' });
-            continue; // Skip this line if the due date is invalid
-        }
-        // --- END CRITICAL VALIDATION ---
-
-        const taskToInsert: TaskInsert = {
+          const taskToInsert: TaskInsert = {
             user_id: user.id,
-            title: extractedTitle.trim() || "Imported Task",
-            description: `Imported from notes: "${bulletRemoved}"`, // Use the full line as description
+            title: content || "Imported Task",
+            description: `Imported from: "${content}"`,
             due_date: taskDueDate.toISOString(),
-            priority: "Medium", // Default priority
-            status: "Not Started", // Default status
-            client_name: null, // No client extracted from simple notes
-            client_id: null,
-            assigned_to_name: user.user_metadata?.full_name || user.email || "User", // Assign to current user
-            assigned_to_avatar: user.user_metadata?.avatar_url || "/placeholder.svg?height=40&width=40",
-            assigned_to_initials: user.user_metadata?.full_name ? user.user_metadata.full_name.substring(0, 2).toUpperCase() : user.email ? user.email.substring(0, 2).toUpperCase() : '?',
+            priority: "Medium",
+            status: "Not Started",
+            assigned_to_name: user.user_metadata?.full_name || user.email || "User",
+            assigned_to_avatar: user.user_metadata?.avatar_url || "",
+            assigned_to_initials: (user.user_metadata?.full_name || user.email || "??").substring(0, 2).toUpperCase(),
             progress: 0,
-            tags: ["imported"], // Default tag
-            source: "Imported Note",
-        };
+            tags: ["imported"],
+            source: "Note Import"
+          }
 
-        const { data: newTask, error: taskError } = await supabase
-            .from('tasks')
-            .insert([taskToInsert])
-            .select('id')
-            .single();
+          const { data: newTask, error: taskError } = await insertWithRetry('tasks', taskToInsert)
 
-        if (taskError) {
-            console.error("Error inserting task:", taskError);
-            toast({ title: 'Error', description: `Failed to create task: ${taskError.message || 'Unknown error'}`, variant: 'destructive' });
-        } else if (newTask?.id) {
-            extractedTaskIds.push(newTask.id);
-            tasksCreatedCount++;
+          if (taskError) {
+            console.error("Task insertion error:", taskError)
+            toast({
+              title: "Task Error",
+              description: `Failed to create task: ${content}`,
+              variant: "destructive"
+            })
+          } else if (newTask?.id) {
+            extractedTaskIds.push(newTask.id)
+            tasksCreated++
+          }
         }
+      } catch (error) {
+        console.error("Error processing line:", error)
+        skippedItems++
       }
     }
 
-    // Record the overall import in Supabase
-    const newImportedNoteData = {
-      user_id: user.id,
-      content: inputText,
-      import_date: new Date().toISOString(),
-      processed: true,
-      extracted_items: {
-        tasks: extractedTaskIds,
-        events: extractedEventIds,
-        emails: extractedEmailIds,
-      },
-    };
+    // Save import record
+    if (eventsCreated > 0 || tasksCreated > 0) {
+      const newImportedNote = {
+        user_id: user.id,
+        content: inputText,
+        import_date: new Date().toISOString(),
+        processed: true,
+        extracted_items: {
+          tasks: extractedTaskIds,
+          events: extractedEventIds,
+          emails: extractedEmailIds
+        }
+      }
 
-    const { error: importError } = await supabase
-      .from('imported_notes')
-      .insert([newImportedNoteData]);
+      const { error: importError } = await supabase
+        .from('imported_notes')
+        .insert([newImportedNote])
 
-    if (importError) {
-      console.error("Error saving imported note history:", importError);
-      toast({ title: 'Error', description: `Failed to save import history: ${importError.message}`, variant: 'destructive' });
-    } else {
-      toast({
-        title: "Import Complete",
-        description: `Successfully imported ${eventsCreatedCount} events and ${tasksCreatedCount} tasks.`,
-        variant: "default",
-      });
-      fetchImportedNotesHistory(); // Re-fetch history to update the display
+      if (importError) {
+        console.error("Import record error:", importError)
+      }
     }
 
-    // Clear the input after successful import
-    setInputText("");
-    setFileName(null);
-    setIsProcessing(false);
-  }, [inputText, toast, user, userLoading, fetchImportedNotesHistory]);
+    // Show summary
+    toast({
+      title: "Import Complete",
+      description: [
+        `Created ${eventsCreated} events`,
+        `Created ${tasksCreated} tasks`,
+        skippedItems > 0 ? `Skipped ${skippedItems} items` : null
+      ].filter(Boolean).join(", "),
+      variant: "default"
+    })
 
-  // Calculate statistics from fetched imported notes history
-  const totalImported = importedNotesHistory.length;
-  const totalTasks = importedNotesHistory.reduce((acc, note) => acc + (note.extracted_items?.tasks?.length || 0), 0);
-  const totalEvents = importedNotesHistory.reduce((acc, note) => acc + (note.extracted_items?.events?.length || 0), 0);
-  const totalEmails = importedNotesHistory.reduce((acc, note) => acc + (note.extracted_items?.emails?.length || 0), 0);
+    setInputText("")
+    setFileName(null)
+    setIsProcessing(false)
+    fetchImportHistory()
+  }, [inputText, user, userLoading, toast, fetchImportHistory])
+
+  const stats = importHistory.reduce((acc, note) => ({
+    tasks: acc.tasks + (note.extracted_items?.tasks?.length || 0),
+    events: acc.events + (note.extracted_items?.events?.length || 0),
+    emails: acc.emails + (note.extracted_items?.emails?.length || 0)
+  }), { tasks: 0, events: 0, emails: 0 })
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center">
-          <Plus className="mr-2 h-4 w-4" /> Import Notes
-        </CardTitle>
-        <CardDescription>Upload a .txt file or paste notes to automatically extract tasks and events.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div>
-          <Label htmlFor="file-upload" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Upload .txt File
-          </Label>
-          <Input id="file-upload" type="file" accept=".txt" onChange={handleFileChange} />
-          {fileName && <p className="text-sm text-muted-foreground mt-1">Selected file: {fileName}</p>}
+    <Card className="border-none shadow-lg">
+      <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-t-lg">
+        <div className="flex items-center space-x-3">
+          <Plus className="h-6 w-6 text-blue-600" />
+          <div>
+            <CardTitle className="text-2xl font-bold text-gray-800">Import Notes</CardTitle>
+            <CardDescription className="text-gray-600">
+              Upload or paste notes to extract tasks and calendar events automatically
+            </CardDescription>
+          </div>
         </div>
+      </CardHeader>
+      <CardContent className="space-y-6 p-6">
+        <div className="space-y-2">
+          <Label htmlFor="file-upload" className="text-gray-700 font-medium">
+            Upload Text File
+          </Label>
+          <div className="flex items-center space-x-3">
+            <Input
+              id="file-upload"
+              type="file"
+              accept=".txt"
+              onChange={handleFileChange}
+              className="w-full max-w-md"
+            />
+            {fileName && (
+              <Badge variant="outline" className="text-blue-600 border-blue-200">
+                {fileName}
+              </Badge>
+            )}
+          </div>
+        </div>
+
         <div className="relative">
           <Textarea
-            placeholder="Enter your notes here. Each line will be processed.
-For Calendar Events: Start a line with a date (YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, or EEE, MMM DD,YYYY) and optionally a time (HH:MM or HH:MM AM/PM).
-Example: 2025-05-28 10:30 Client Call
-Example: Jun 15, 2025 Project Deadline Review
-For Tasks: Lines without a date will be treated as tasks due at the end of the current day.
-Example: Follow up with marketing team"
+            placeholder={`Enter your notes here (one per line). Examples:
+• 2025-06-15 14:30 Team meeting
+• 06/20/2025 Project deadline
+• Follow up with client`}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             rows={8}
-            className="w-full"
+            className="w-full min-h-[200px] border-gray-300 focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
           />
-          <div className="absolute top-2 right-2">
-            <HelpCircle className="h-4 w-4 text-muted-foreground cursor-pointer" onClick={() => {
-              toast({
-                title: "Formatting Help",
-                description: `Enter each note on a new line.
-For Calendar Events: Start a line with a date (e.g.,YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, or EEE, MMM DD,YYYY). You can optionally add a time (e.g., HH:MM, HH:MM AM/PM). If a time is provided, the event will default to ending one minute later. If only a date is given, the event will be set for a 1-hour duration.
-For Tasks: Any line not starting with a clear date will be treated as a task due at the end of the current day.`,
-                duration: 15000, // Show for 15 seconds
-              });
-            }} />
+          <button
+            onClick={() => toast({
+              title: "Formatting Guide",
+              description: [
+                "For events: Start with a date (YYYY-MM-DD, MM/DD/YYYY, etc.)",
+                "For tasks: Just enter the task text",
+                "Examples:",
+                "• 2025-06-15 14:30 Team meeting → Creates calendar event",
+                "• Buy office supplies → Creates task due today"
+              ].join("\n"),
+              duration: 10000
+            })}
+            className="absolute top-3 right-3 text-gray-400 hover:text-blue-500 transition-colors"
+          >
+            <HelpCircle className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center space-x-4">
+            <Badge variant="secondary" className="px-3 py-1">
+              <FileText className="h-4 w-4 mr-2 text-blue-500" />
+              {importHistory.length} imports
+            </Badge>
+            <Badge variant="secondary" className="px-3 py-1">
+              <CheckSquare className="h-4 w-4 mr-2 text-green-500" />
+              {stats.tasks} tasks
+            </Badge>
+            <Badge variant="secondary" className="px-3 py-1">
+              <CalendarIcon className="h-4 w-4 mr-2 text-purple-500" />
+              {stats.events} events
+            </Badge>
           </div>
-        </div>
-        <Button onClick={processImport} disabled={isProcessing || !inputText.trim() || userLoading || !user?.id} className="bg-[#2660ff] hover:bg-[#1a4cd1]">
-          {isProcessing ? "Processing..." : "Import Notes"}
-        </Button>
-      </CardContent>
-    </Card>
-  );
-}
-
-// This is your main ImportPage component
-export default function ImportPage() {
-  // The ImportedNotes component now manages its own state for importedNotesHistory
-  // and calculates statistics internally.
-  // We will pass down a prop or use context if these stats need to be displayed outside ImportNotes component.
-  // For now, the stats will be calculated and displayed within the ImportNotes component itself.
-
-  // To display the statistics here, we need to lift the state up or use a global store for these stats.
-  // Given the previous context, the user wants the stats to reflect what's in Supabase.
-  // So, we'll fetch them here in the parent component as well, or pass them from the child.
-  // For simplicity and direct addressing of the user's issue, I'll assume the stats are needed here.
-
-  const [importedNotesStats, setImportedNotesStats] = useState({
-    totalImported: 0,
-    totalTasks: 0,
-    totalEvents: 0,
-    totalEmails: 0,
-    history: [] as ImportedNote[]
-  });
-  const [user, setUser] = useState<User | null>(null);
-  const [userLoading, setUserLoading] = useState(true);
-  const { toast } = useToast();
-
-  useEffect(() => {
-    const getSupabaseUser = async () => {
-      try {
-        const { data: { user: supabaseUser }, error } = await supabase.auth.getUser();
-        if (error) {
-          console.error("Error getting Supabase user:", error);
-          setUser(null);
-        } else {
-          setUser(supabaseUser);
-        }
-      } catch (e) {
-        console.error("Unexpected error getting Supabase user:", e);
-        setUser(null);
-      } finally {
-        setUserLoading(false);
-      }
-    };
-    getSupabaseUser();
-  }, []);
-
-  const fetchAndCalculateStats = useCallback(async () => {
-    if (!user?.id) {
-      setImportedNotesStats({
-        totalImported: 0,
-        totalTasks: 0,
-        totalEvents: 0,
-        totalEmails: 0,
-        history: []
-      });
-      return;
-    }
-    try {
-      const { data, error } = await supabase
-        .from('imported_notes')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('import_date', { ascending: false });
-
-      if (error) {
-        console.error("Error fetching imported notes for stats:", error);
-        toast({ title: 'Error', description: `Failed to load import stats: ${error.message}`, variant: 'destructive' });
-      } else if (data) {
-        const totalImported = data.length;
-        const totalTasks = data.reduce((acc, note) => acc + (note.extracted_items?.tasks?.length || 0), 0);
-        const totalEvents = data.reduce((acc, note) => acc + (note.extracted_items?.events?.length || 0), 0);
-        const totalEmails = data.reduce((acc, note) => acc + (note.extracted_items?.emails?.length || 0), 0);
-        setImportedNotesStats({
-          totalImported,
-          totalTasks,
-          totalEvents,
-          totalEmails,
-          history: data as ImportedNote[]
-        });
-      }
-    } catch (error) {
-      console.error("An unexpected error occurred while fetching import stats:", error);
-      toast({ title: 'Error', description: 'An unexpected error occurred while loading import stats.', variant: 'destructive' });
-    }
-  }, [user?.id, toast]);
-
-  useEffect(() => {
-    if (user?.id) {
-      fetchAndCalculateStats();
-    }
-  }, [user?.id, fetchAndCalculateStats]);
-
-
-  return (
-    <div className="flex flex-col">
-      <div className="flex-1 space-y-4 p-4 md:p-8 pt-6">
-        <div className="md:hidden">
-          <MobileNav />
-        </div>
-        <div className="flex items-center justify-between">
-          <h2 className="text-3xl font-bold tracking-tight">Import Notes</h2>
+          <Button
+            onClick={processImport}
+            disabled={isProcessing || !inputText.trim() || userLoading || !user}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow-sm transition-colors w-full sm:w-auto"
+          >
+            {isProcessing ? (
+              <span className="flex items-center">
+                <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Processing...
+              </span>
+            ) : (
+              "Import Notes"
+            )}
+          </Button>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Imports</CardTitle>
-              <FileText className="h-4 w-4 text-[#2660ff]" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{importedNotesStats.totalImported}</div>
-              <p className="text-xs text-muted-foreground">Text notes imported and processed</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Tasks Created</CardTitle>
-              <CheckSquare className="h-4 w-4 text-[#2660ff]" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{importedNotesStats.totalTasks}</div>
-              <p className="text-xs text-muted-foreground">Tasks extracted from notes</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Events Scheduled</CardTitle>
-              <CalendarIcon className="h-4 w-4 text-[#2660ff]" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{importedNotesStats.totalEvents}</div>
-              <p className="text-xs text-muted-foreground">Calendar events created</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Emails Drafted</CardTitle>
-              <Mail className="h-4 w-4 text-[#2660ff]" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{importedNotesStats.totalEmails}</div>
-              <p className="text-xs text-muted-foreground">Email drafts prepared</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="grid gap-4">
-          {/* Pass the user and fetchAndCalculateStats function to ImportNotes */}
-          <ImportNotes />
-        </div>
-
-        {importedNotesStats.history.length > 0 && (
+        {importHistory.length > 0 && (
           <div className="space-y-4">
-            <h3 className="text-lg font-medium">Import History</h3>
-            <div className="space-y-4">
-              {importedNotesStats.history
-                .map((note) => (
-                  <Card key={note.id}>
-                    <CardHeader className="p-4 pb-2">
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-base">Import #{note.id}</CardTitle>
-                        <div className="text-sm text-muted-foreground">
+            <h3 className="text-lg font-semibold text-gray-800">Recent Imports</h3>
+            <div className="space-y-3">
+              {importHistory.slice(0, 3).map((note) => (
+                <Card key={note.id} className="border border-gray-200 hover:border-blue-200 transition-colors">
+                  <CardContent className="p-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="text-sm text-gray-500">
                           {new Date(note.import_date).toLocaleString()}
-                        </div>
+                        </p>
+                        <p className="text-gray-700 line-clamp-2 mt-1">
+                          {note.content.split('\n')[0]}
+                        </p>
                       </div>
-                    </CardHeader>
-                    <CardContent className="p-4 pt-2">
-                      <div className="flex items-center space-x-4">
-                        <div className="flex items-center">
-                          <CheckSquare className="h-4 w-4 mr-2 text-[#2660ff]" />
-                          <span>{note.extracted_items?.tasks?.length || 0} tasks</span>
-                        </div>
-                        <div className="flex items-center">
-                          <CalendarIcon className="h-4 w-4 mr-2 text-[#2660ff]" />
-                          <span>{note.extracted_items?.events?.length || 0} events</span>
-                        </div>
-                        <div className="flex items-center">
-                          <Mail className="h-4 w-4 mr-2 text-[#2660ff]" />
-                          <span>{note.extracted_items?.emails?.length || 0} emails</span>
-                        </div>
+                      <div className="flex space-x-2">
+                        {note.extracted_items.tasks.length > 0 && (
+                          <Badge variant="outline" className="text-green-600 border-green-200">
+                            {note.extracted_items.tasks.length} tasks
+                          </Badge>
+                        )}
+                        {note.extracted_items.events.length > 0 && (
+                          <Badge variant="outline" className="text-purple-600 border-purple-200">
+                            {note.extracted_items.events.length} events
+                          </Badge>
+                        )}
                       </div>
-                      <div className="mt-4 text-sm text-muted-foreground line-clamp-3">{note.content}</div>
-                    </CardContent>
-                  </Card>
-                ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
             </div>
           </div>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+const StatsCard = ({ icon, title, value, description, color }: {
+  icon: React.ReactNode
+  title: string
+  value: number
+  description: string
+  color: string
+}) => (
+  <Card className="hover:shadow-md transition-shadow">
+    <CardHeader className="flex flex-row items-center justify-between pb-2">
+      <CardTitle className="text-sm font-medium text-gray-600">{title}</CardTitle>
+      <div className={`p-2 rounded-lg bg-${color}-100 text-${color}-600`}>
+        {icon}
+      </div>
+    </CardHeader>
+    <CardContent>
+      <div className="text-2xl font-bold">{value}</div>
+      <p className="text-xs text-gray-500 mt-1">{description}</p>
+    </CardContent>
+  </Card>
+)
+
+const ImportPage = () => {
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [stats, setStats] = useState({
+    totalImports: 0,
+    totalTasks: 0,
+    totalEvents: 0,
+    totalEmails: 0
+  })
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const { data: { user: supabaseUser } } = await supabase.auth.getUser()
+        setUser(supabaseUser)
+
+        if (supabaseUser?.id) {
+          const { count: imports } = await supabase
+            .from('imported_notes')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', supabaseUser.id)
+
+          const { data: notes } = await supabase
+            .from('imported_notes')
+            .select('extracted_items')
+            .eq('user_id', supabaseUser.id)
+
+          const taskCount = notes?.reduce((acc, note) => acc + (note.extracted_items?.tasks?.length || 0), 0) || 0
+          const eventCount = notes?.reduce((acc, note) => acc + (note.extracted_items?.events?.length || 0), 0) || 0
+
+          setStats({
+            totalImports: imports || 0,
+            totalTasks: taskCount,
+            totalEvents: eventCount,
+            totalEmails: 0 // Placeholder for future email functionality
+          })
+        }
+      } catch (error) {
+        console.error("Error loading page data:", error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchData()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex flex-col space-y-4 p-4 md:p-8 pt-6">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <Skeleton key={i} className="h-[110px] w-full rounded-lg" />
+          ))}
+        </div>
+        <Skeleton className="h-[400px] w-full rounded-lg" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col">
+      <div className="flex-1 space-y-6 p-4 md:p-8 pt-6">
+        <div className="md:hidden">
+          <MobileNav />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Note Importer</h1>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <StatsCard
+            icon={<FileText className="h-4 w-4" />}
+            title="Total Imports"
+            value={stats.totalImports}
+            description="Notes processed"
+            color="blue"
+          />
+          <StatsCard
+            icon={<CheckSquare className="h-4 w-4" />}
+            title="Tasks Created"
+            value={stats.totalTasks}
+            description="From all imports"
+            color="green"
+          />
+          <StatsCard
+            icon={<CalendarIcon className="h-4 w-4" />}
+            title="Events Scheduled"
+            value={stats.totalEvents}
+            description="Calendar entries"
+            color="purple"
+          />
+          <StatsCard
+            icon={<Mail className="h-4 w-4" />}
+            title="Emails Drafted"
+            value={stats.totalEmails}
+            description="Prepared messages"
+            color="orange"
+          />
+        </div>
+
+        <ImportNotesCard />
       </div>
     </div>
-  );
+  )
 }
+
+export default ImportPage

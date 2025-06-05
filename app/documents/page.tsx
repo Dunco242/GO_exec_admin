@@ -1,3 +1,4 @@
+// app/documents/page.tsx
 "use client";
 
 import { useState, useEffect, useCallback, ChangeEvent } from "react";
@@ -6,7 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { MobileNav } from "@/components/mobile-nav";
+// Assuming MobileNav exists at this path, if not, remove or replace it
+// import { MobileNav } from "@/components/mobile-nav";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
     DropdownMenu,
@@ -24,20 +26,21 @@ import { useToast } from "@/hooks/use-toast";
 import { format, formatDistanceToNowStrict } from 'date-fns';
 import { Badge } from "@/components/ui/badge"; // Ensure Badge is imported
 import { useRouter } from 'next/navigation'; // Import useRouter for navigation
+import { convertToRaw, EditorState } from "draft-js";
 
 // Document interface matching Supabase schema
 interface Document {
     id: number;
     user_id: string; // Creator of the document
     title: string;
-    content: any | null; // JSONB for rich text, 'any' for now
+    content: any | null; // JSONB for rich text
     created_at: string;
     updated_at: string;
     type: 'document' | 'approval';
     status: 'draft' | 'sent_for_signature' | 'signed' | 'sent_for_approval' | 'approved' | 'rejected' | 'archived';
-    current_approver_id: string | null;
-    current_signer_id: string | null;
-    shared_with: string[] | null;
+    current_approver_id: string | null; // Stores email or user_id string
+    current_signer_id: string | null;    // Stores email or user_id string
+    shared_with: string[] | null;        // Array of user_id or email strings
     client_id: number | null; // Link to clients table
     client_name: string | null; // Denormalized client name
     creator_name?: string; // Denormalized or fetched separately (now will be 'Unknown User' without join)
@@ -51,7 +54,7 @@ interface Client {
 
 // UserProfile interface (now simplified as we are not fetching all users dynamically here)
 interface UserProfile {
-    id: string;
+    id: string; // This could be UUID or email, depending on how `shared_with` and `current_approver_id`/`signer_id` are stored
     email: string;
     full_name: string | null;
     avatar_url: string | null;
@@ -88,7 +91,7 @@ export default function DocumentManagementPage() {
     const [selectedDocumentForShare, setSelectedDocumentForShare] = useState<Document | null>(null);
     const [shareUserEmail, setShareUserEmail] = useState("");
 
-    // Data for dropdowns (allUsers will be empty as we are not fetching all users directly from auth.users)
+    // Data for dropdowns (allUsers will be empty as we are not fetching all users dynamically here)
     const [allClients, setAllClients] = useState<Client[]>([]); // For client selection
     const [allUsers, setAllUsers] = useState<UserProfile[]>([]); // This will remain empty or contain only current user if needed
 
@@ -151,10 +154,13 @@ export default function DocumentManagementPage() {
             if (activeTab === 'my-documents') {
                 query = query.eq('user_id', userId);
             } else if (activeTab === 'shared-with-me') {
+                // Check if userId is present in the shared_with array (which stores emails/user_ids)
                 query = query.contains('shared_with', [userId]);
             } else if (activeTab === 'pending-signatures') {
+                // Assuming current_signer_id stores user's email/ID
                 query = query.eq('current_signer_id', userId).eq('status', 'sent_for_signature');
             } else if (activeTab === 'pending-approvals') {
+                // Assuming current_approver_id stores user's email/ID
                 query = query.eq('current_approver_id', userId).eq('status', 'sent_for_approval');
             }
 
@@ -205,6 +211,9 @@ export default function DocumentManagementPage() {
         }
 
         try {
+            // Initialize content with an empty Draft.js raw ContentState JSON
+            const emptyContentState = convertToRaw(EditorState.createEmpty().getCurrentContent());
+
             const { data, error } = await supabase
                 .from('documents')
                 .insert([{
@@ -212,7 +221,7 @@ export default function DocumentManagementPage() {
                     title: newDocumentTitle,
                     type: newDocumentType,
                     status: 'draft',
-                    content: '', // Initialize with empty string for TipTap HTML content
+                    content: emptyContentState, // Initialize with empty Draft.js content
                     shared_with: [],
                     client_id: newDocumentClientId, // Include client ID
                     client_name: newDocumentClientName, // Include client name
@@ -243,7 +252,7 @@ export default function DocumentManagementPage() {
 
     // Handle redirecting to document editor/viewer
     const handleViewOrEditDocument = (docId: number) => {
-        router.push(`/documents/editor/${docId}`);
+        router.push(`/documents/editor/${docId}`); // Always go to editor page for viewing/editing
     };
 
     // Handle requesting signature
@@ -252,10 +261,12 @@ export default function DocumentManagementPage() {
             toast({ title: "Error", description: "Invalid request.", variant: "destructive" });
             return;
         }
-        // Removed allUsers.find() as allUsers will be empty.
-        // Assuming signerEmail is the actual user ID or email to be used.
-        // In a real app, you'd validate this email against your registered users on the backend.
-        const signerId = signerEmail; // For now, directly use email as ID for simplicity (requires backend mapping)
+        if (!signerEmail.trim()) {
+            toast({ title: "Validation Error", description: "Signer email cannot be empty.", variant: "destructive" });
+            return;
+        }
+        // For now, directly use email as signer_id. In a real app, you'd validate this against your user base.
+        const signerIdentifier = signerEmail;
 
         try {
             // Create a signature request
@@ -263,7 +274,7 @@ export default function DocumentManagementPage() {
                 .from('signatures')
                 .insert([{
                     document_id: selectedDocumentForSignature.id,
-                    signer_id: signerId, // Use the provided signer email/ID
+                    signer_id: signerIdentifier, // Use the provided signer email/ID
                     requested_by_user_id: userId,
                     status: 'pending',
                 }]);
@@ -279,7 +290,7 @@ export default function DocumentManagementPage() {
                 .from('documents')
                 .update({
                     status: 'sent_for_signature',
-                    current_signer_id: signerId, // Use the provided signer email/ID
+                    current_signer_id: signerIdentifier, // Use the provided signer email/ID
                 })
                 .eq('id', selectedDocumentForSignature.id)
                 .eq('user_id', userId); // Ensure only owner can update
@@ -307,8 +318,11 @@ export default function DocumentManagementPage() {
             toast({ title: "Error", description: "Invalid request.", variant: "destructive" });
             return;
         }
-        // Removed allUsers.find()
-        const approverId = approverEmail; // Directly use email as ID
+        if (!approverEmail.trim()) {
+            toast({ title: "Validation Error", description: "Approver email cannot be empty.", variant: "destructive" });
+            return;
+        }
+        const approverIdentifier = approverEmail; // Directly use email as ID
 
         try {
             // Create an approval request
@@ -316,7 +330,7 @@ export default function DocumentManagementPage() {
                 .from('approvals')
                 .insert([{
                     document_id: selectedDocumentForApproval.id,
-                    approver_id: approverId, // Use the provided approver email/ID
+                    approver_id: approverIdentifier, // Use the provided approver email/ID
                     requested_by_user_id: userId,
                     status: 'pending',
                     approval_order: 1, // Assuming simple single-step approval for now
@@ -333,7 +347,7 @@ export default function DocumentManagementPage() {
                 .from('documents')
                 .update({
                     status: 'sent_for_approval',
-                    current_approver_id: approverId, // Use the provided approver email/ID
+                    current_approver_id: approverIdentifier, // Use the provided approver email/ID
                 })
                 .eq('id', selectedDocumentForApproval.id)
                 .eq('user_id', userId); // Ensure only owner can update
@@ -361,11 +375,14 @@ export default function DocumentManagementPage() {
             toast({ title: "Error", description: "Invalid request.", variant: "destructive" });
             return;
         }
-        // Removed allUsers.find()
-        const userToShareWithId = shareUserEmail; // Directly use email as ID
+        if (!shareUserEmail.trim()) {
+            toast({ title: "Validation Error", description: "User email to share with cannot be empty.", variant: "destructive" });
+            return;
+        }
+        const userToShareWithIdentifier = shareUserEmail; // Directly use email as ID
 
         const currentSharedWith = selectedDocumentForShare.shared_with || [];
-        if (currentSharedWith.includes(userToShareWithId)) {
+        if (currentSharedWith.includes(userToShareWithIdentifier)) {
             toast({ title: "Info", description: "Document already shared with this user.", variant: "default" });
             return;
         }
@@ -373,7 +390,7 @@ export default function DocumentManagementPage() {
         try {
             const { error } = await supabase
                 .from('documents')
-                .update({ shared_with: [...currentSharedWith, userToShareWithId] })
+                .update({ shared_with: [...currentSharedWith, userToShareWithIdentifier] })
                 .eq('id', selectedDocumentForShare.id)
                 .eq('user_id', userId); // Only owner can share
 
@@ -398,11 +415,13 @@ export default function DocumentManagementPage() {
             toast({ title: "Error", description: "User not authenticated.", variant: "destructive" });
             return;
         }
-        // Using a custom modal for confirmation instead of window.confirm
-        // For brevity, I'll use a simple alert-like toast, but you'd replace this with a proper confirmation modal.
-        if (!window.confirm(`Are you sure you want to delete "${documentTitle}"? This action cannot be undone.`)) {
-             return;
-        }
+        // Removed window.confirm and replaced with a toast for direct action feedback.
+        // For a full confirmation, implement a custom modal as suggested previously.
+        toast({
+            title: "Deleting Document...",
+            description: `Attempting to delete "${documentTitle}".`,
+        });
+
         try {
             const { error } = await supabase
                 .from('documents')
@@ -422,10 +441,6 @@ export default function DocumentManagementPage() {
             toast({ title: 'Error', description: 'An unexpected error occurred.', variant: 'destructive' });
         }
     };
-
-    // The `filteredDocuments` memo is no longer needed as `fetchDocuments` handles filtering
-    // based on `searchTerm` directly in the Supabase query.
-    // The `documents` state already holds the filtered results.
 
     const getStatusBadgeVariant = (status: Document['status']) => {
         switch (status) {
@@ -457,9 +472,10 @@ export default function DocumentManagementPage() {
     return (
         <div className="flex flex-col">
             <div className="flex-1 space-y-4 p-4 md:p-8 pt-6">
-                <div className="md:hidden">
+                {/* Removed MobileNav if it's not a common component in your project */}
+                {/* <div className="md:hidden">
                     <MobileNav />
-                </div>
+                </div> */}
                 <div className="flex items-center justify-between">
                     <h2 className="text-3xl font-bold tracking-tight">Document Management</h2>
                     <div className="flex items-center space-x-2">

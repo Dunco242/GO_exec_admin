@@ -1,67 +1,104 @@
-"use client"
+"use client";
 
-import type React from "react"
-import { useState, useEffect } from "react"
-import {
-  format,
-  addDays,
-  startOfWeek,
-  endOfWeek,
-  startOfMonth,
-  endOfMonth,
-  eachDayOfInterval,
-  isSameDay,
-  startOfDay,
-  endOfDay,
-} from "date-fns"
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
-import { Textarea } from "@/components/ui/textarea"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-  DialogDescription,
-} from "@/components/ui/dialog"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { useToast } from "@/hooks/use-toast"
-import { supabase } from "@/lib/supabaseClient"
-import { isValidDate } from "@/lib/utils"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import React, { useState, useEffect, useCallback } from "react";
+import { format, startOfWeek, setHours, setMinutes, parseISO, addHours, isValid, Locale } from "date-fns";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
+import { useToast } from "@/hooks/use-toast";
+import dynamic from "next/dynamic";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel
+} from "@/components/ui/alert-dialog";
+import { Textarea } from "@/components/ui/textarea"; // Fixed: Added missing import
+import { Save, ChevronLeft, ChevronRight, Plus, Edit, Trash2, MoreHorizontal } from "lucide-react";
+import "react-big-calendar/lib/css/react-big-calendar.css";
+import "react-big-calendar/lib/addons/dragAndDrop/styles.css";
+import "app/components/calendar.css";
 
+// Define types
 interface CalendarEvent {
-  id: number
-  title: string
-  description?: string | null
-  date: string
-  endTime: string
-  client_name?: string | null
-  type: string
-  location?: string | null
-  source?: string
-  color: string
+  id: number;
+  title: string;
+  description?: string | null;
+  date: string; // YYYY-MM-DD
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  type: string;
+  color: string;
+  user_id?: string;
 }
 
-type CalendarView = "week" | "month" | "day"
+interface Task {
+  id: number;
+  title: string;
+  due_date: string; // YYYY-MM-DD
+  project_id: number | null;
+}
 
-const timeSlots = Array.from({ length: 12 }, (_, i) => i + 8) // 8am - 7pm
+interface BigCalendarEvent {
+  id: number;
+  title: string;
+  start: Date;
+  end: Date;
+  allDay?: boolean;
+  resource: CalendarEvent | Task;
+  color?: string;
+}
 
-export default function CalendarPage() {
-  const [selectedDate, setSelectedDate] = useState(new Date())
-  const [currentWeek, setCurrentWeek] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }))
-  const [currentMonth, setCurrentMonth] = useState(startOfMonth(new Date()))
-  const [currentDay, setCurrentDay] = useState(new Date())
-  const [calendarView, setCalendarView] = useState<CalendarView>("week")
-  const [events, setEvents] = useState<CalendarEvent[]>([])
-  const [openAddEventModal, setOpenAddEventModal] = useState(false)
+// Dynamic imports to avoid SSR issues
+const BigCalendar = dynamic(() => import("react-big-calendar").then((mod) => mod.Calendar), {
+  ssr: false,
+  loading: () => <p>Loading calendar...</p>,
+});
+
+const DragAndDropCalendar = dynamic(
+  () =>
+    import("react-big-calendar/lib/addons/dragAndDrop").then((mod) => {
+      const withDnD = mod.default;
+      return withDnD(BigCalendar);
+    }),
+  {
+    ssr: false,
+    loading: () => <p>Loading drag-and-drop...</p>,
+  }
+);
+
+// Localizer setup
+import { dateFnsLocalizer, DateLocalizer, stringOrDate } from "react-big-calendar";
+import { enUS } from "date-fns/locale/en-US"; // ✅ Fixed: Import destructured
+import withDragAndDrop from "react-big-calendar/lib/addons/dragAndDrop";
+
+const localizer = dateFnsLocalizer({
+  format,
+  parse: (str: string, formatStr: string, referenceDate: Date) => parseISO(str), // ✅ Added proper types
+  startOfWeek: (locale: Locale) => startOfWeek(new Date(), { locale }), // ✅ Added Locale type
+  getDay: (date: Date) => date.getDay(), // ✅ Added Date type
+  locales: {
+    "en-US": enUS,
+  },
+});
+
+export default function CalendarApp() {
+  const router = useRouter();
+  const { toast } = useToast();
+  const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  const [calendarView, setCalendarView] = useState<"month" | "week" | "day">("month");
+  const [events, setEvents] = useState<BigCalendarEvent[]>([]);
+  const [todayEvents, setTodayEvents] = useState<BigCalendarEvent[]>([]);
+  const [openAddEventModal, setOpenAddEventModal] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<BigCalendarEvent | null>(null);
+  const [canEdit, setCanEdit] = useState<boolean>(false);
+
   const [newEvent, setNewEvent] = useState({
     title: "",
-    date: format(selectedDate, "yyyy-MM-dd"),
+    date: format(currentDate, "yyyy-MM-dd"),
     startTime: "09:00",
     endTime: "10:00",
     description: "",
@@ -69,772 +106,516 @@ export default function CalendarPage() {
     location: "",
     color: "#2660ff",
     client_name: "",
-    source: "Manual",
-  })
-  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null)
-  const { toast } = useToast()
+  });
 
-  const [allClients, setAllClients] = useState<{ id: number; name: string }[]>([])
-  const [clientSearchTerm, setClientSearchTerm] = useState("")
-  const [showClientSuggestions, setShowClientSuggestions] = useState(false)
-
-  const weekDays = eachDayOfInterval({
-    start: currentWeek,
-    end: endOfWeek(currentWeek, { weekStartsOn: 1 }),
-  })
-
-  const monthDays = eachDayOfInterval({
-    start: startOfMonth(currentMonth),
-    end: endOfMonth(currentMonth),
-  })
-
-  const getEventsForDay = (day: Date): CalendarEvent[] => {
-    return events.filter((event) => {
+  // Fetch user ID
+  useEffect(() => {
+    const getUserId = async () => {
       try {
-        const eventDate = new Date(event.date)
-        return isValidDate(eventDate) && isSameDay(eventDate, day)
-      } catch (err) {
-        console.warn("Invalid event date:", event.date)
-        return false
-      }
-    })
-  }
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error || !user) throw error || new Error("User not authenticated");
 
-  const navigatePrevious = () => {
-    if (calendarView === "week") {
-      const prevWeek = addDays(currentWeek, -7)
-      setCurrentWeek(prevWeek)
-      setSelectedDate(prevWeek)
-    } else if (calendarView === "month") {
-      const prevMonth = addDays(currentMonth, -30)
-      setCurrentMonth(prevMonth)
-      setSelectedDate(prevMonth)
-    } else if (calendarView === "day") {
-      const prevDay = addDays(currentDay, -1)
-      setCurrentDay(prevDay)
-      setSelectedDate(prevDay)
-    }
-  }
-
-  const navigateNext = () => {
-    if (calendarView === "week") {
-      const nextWeek = addDays(currentWeek, 7)
-      setCurrentWeek(nextWeek)
-      setSelectedDate(nextWeek)
-    } else if (calendarView === "month") {
-      const nextMonth = addDays(currentMonth, 30)
-      setCurrentMonth(nextMonth)
-      setSelectedDate(nextMonth)
-    } else if (calendarView === "day") {
-      const nextDay = addDays(currentDay, 1)
-      setCurrentDay(nextDay)
-      setSelectedDate(nextDay)
-    }
-  }
-
-  const selectDay = (day: Date) => {
-    setSelectedDate(day)
-    if (calendarView === "month") {
-      setCalendarView("day")
-      setCurrentDay(day)
-    }
-  }
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const { id, value } = e.target
-
-    if (id === "client_name") {
-      setNewEvent((prev) => ({ ...prev, client_name: value }))
-      setClientSearchTerm(value)
-    } else {
-      setNewEvent((prev) => ({ ...prev, [id]: value }))
-    }
-  }
-
-  const fetchClients = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("clients")
-        .select("id, name")
-        .ilike("name", `%${clientSearchTerm}%`)
-        .order("name")
-
-      if (error) throw error
-
-      setAllClients(data || [])
-    } catch (err) {
-      console.error("Error fetching clients:", err)
-    }
-  }
-
-  const fetchEvents = async () => {
-    try {
-      const { data, error } = await supabase.from("calendar_events").select("*").order("date")
-
-      if (error) {
-        throw error
-      }
-
-      const formattedEvents = data
-        .map((event) => {
-          let parsedDate: Date
-          let parsedEnd: Date
-
-          try {
-            parsedDate = new Date(event.date)
-            parsedEnd = new Date(event.end_time)
-          } catch (err) {
-            console.warn("Invalid event date:", event.id, "- skipping.")
-            return null
-          }
-
-          if (!isValidDate(parsedDate) || !isValidDate(parsedEnd)) {
-            console.warn("Skipping invalid event", event.id)
-            return null
-          }
-
-          return {
-            id: event.id,
-            title: event.title,
-            description: event.description,
-            date: event.date,
-            endTime: event.end_time,
-            client_name: event.client_name,
-            type: event.type,
-            location: event.location,
-            source: event.source,
-            color: event.color,
-          }
-        })
-        .filter(Boolean) as CalendarEvent[]
-
-      setEvents(formattedEvents)
-    } catch (err: any) {
-      toast({
-        title: "Error",
-        description: `Failed to fetch calendar events: ${err.message}`,
-        variant: "destructive",
-      })
-    }
-  }
-
-  const fetchTasksForCalendar = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("tasks")
-        .select("id, title, due_date, client_name")
-        .not("due_date", "is.null", "")
-
-      if (error) {
-        if (error.code === "PGRST101" || error.message.includes("does not exist")) {
-          toast({
-            title: "Info",
-            description: "Tasks table not found. Task integration skipped.",
-            variant: "default",
-          })
-          return
-        }
-        console.error("Error fetching tasks for calendar:", error.message)
+        setUserId(user.id);
+      } catch (error: any) {
         toast({
-          title: "Error",
-          description: `Failed to fetch tasks for calendar: ${error.message}`,
-          variant: "destructive",
-        })
-        return
+          title: "Authentication Error",
+          description: error.message || "Failed to get user information",
+          variant: "destructive"
+        });
+      }
+    };
+
+    getUserId();
+  }, []);
+
+  // Fetch calendar events and tasks
+  const fetchEventsAndTasks = useCallback(async () => {
+    if (!userId) return;
+
+    try {
+      const [{ data: eventData, error: eventError }, { data: taskData, error: taskError }] = await Promise.all([
+        supabase.from("calendar_events").select("*").eq("user_id", userId),
+        supabase.from("tasks").select("*").eq("user_id", userId),
+      ]);
+
+      if (eventError || taskError) {
+        throw new Error("Failed to load events or tasks");
       }
 
-      if (!data || data.length === 0) {
-        console.log("No tasks found with due dates.")
-        return
-      }
+      const mappedEvents = eventData.map(mapSupabaseEventToBigCalendarEvent);
+      const mappedTasks = taskData.map(mapSupabaseTaskToBigCalendarEvent);
 
-      const formattedTasks = data
-        .map((task) => {
-          if (!task.due_date) return null
+      setEvents([...mappedEvents, ...mappedTasks]);
 
-          let parsedDate: Date
-          try {
-            parsedDate = new Date(task.due_date)
-          } catch (e) {
-            console.warn("Invalid task due_date:", task.due_date)
-            return null
-          }
+      const today = new Date();
+      const todayString = format(today, "yyyy-MM-dd");
+      const todayEvents = [...mappedEvents, ...mappedTasks].filter(event =>
+        format(event.start, "yyyy-MM-dd") === todayString
+      );
 
-          if (!isValidDate(parsedDate)) {
-            console.warn("Skipping task due to invalid date:", task.id, task.due_date)
-            return null
-          }
+      setTodayEvents(todayEvents);
 
-          return {
-            id: -task.id,
-            title: task.title || "Untitled Task",
-            description: null,
-            date: parsedDate.toISOString(),
-            endTime: parsedDate.toISOString(),
-            client_name: task.client_name || "",
-            type: "Task",
-            location: null,
-            source: "Tasks",
-            color: "#800080",
-          }
-        })
-        .filter(Boolean) as CalendarEvent[]
-
-      setEvents((prev) => [...prev, ...formattedTasks])
-    } catch (err) {
-      console.error("Unexpected error while fetching tasks:", err)
+    } catch (error: any) {
       toast({
         title: "Error",
-        description: "An unexpected error occurred while fetching tasks for calendar.",
-        variant: "destructive",
-      })
+        description: error.message,
+        variant: "destructive"
+      });
     }
-  }
+  }, [userId]);
 
+  useEffect(() => {
+    fetchEventsAndTasks();
+  }, [fetchEventsAndTasks]);
+
+  // Map Supabase Event to BigCalendar Event
+  const mapSupabaseEventToBigCalendarEvent = (event: CalendarEvent): BigCalendarEvent => {
+    const startDate = parseISO(event.date);
+    const [startHours, startMinutes] = event.startTime.split(":").map(Number);
+    let start = setMinutes(setHours(startDate, startHours), startMinutes);
+
+    const endDate = parseISO(event.date);
+    const [endHours, endMinutes] = event.endTime.split(":").map(Number);
+    let end = setMinutes(setHours(endDate, endHours), endMinutes);
+
+    if (end < start) {
+      end = addHours(end, 24); // Span across midnight
+    }
+
+    return {
+      id: event.id,
+      title: event.title,
+      start,
+      end,
+      resource: event,
+      color: event.color,
+    };
+  };
+
+  // Map Supabase Task to BigCalendar Event
+  const mapSupabaseTaskToBigCalendarEvent = (task: Task): BigCalendarEvent => {
+    const date = parseISO(task.due_date);
+    const start = setHours(setMinutes(date, 0), 0);
+    const end = setHours(setMinutes(date, 59), 23);
+
+    return {
+      id: -task.id, // Use negative ID to differentiate from events
+      title: `Task: ${task.title}`,
+      start,
+      end,
+      allDay: true,
+      resource: { ...task, type: "task", color: "#800080" },
+      color: "#800080",
+    };
+  };
+
+  // Handle event drop
+  const onEventDrop = useCallback(
+    async ({ event, start, end }: any) => {
+      if (!userId) return;
+
+      const isTask = (event.resource as { type?: string }).type === "task";
+      const tableName = isTask ? "tasks" : "calendar_events";
+      const recordId = isTask ? Math.abs(event.id) : event.id;
+
+      const updatedEvents = events.map((e) =>
+        e.id === event.id ? { ...e, start, end } : e
+      );
+      setEvents(updatedEvents);
+
+      try {
+        const updateData = isTask
+            ? { due_date: format(start, "yyyy-MM-dd") }
+            : {
+                date: format(start, "yyyy-MM-dd"),
+                startTime: format(start, "HH:mm"),
+                endTime: format(end, "HH:mm"),
+              };
+
+        const { error } = await supabase
+          .from(tableName)
+          .update(updateData)
+          .eq("id", recordId)
+          .eq("user_id", userId);
+
+        if (error) throw error;
+
+        toast({ title: "Event Moved", description: `"${event.title}" has been moved.` });
+      } catch (error: any) {
+        toast({
+          title: "Move Failed",
+          description: error.message,
+          variant: "destructive"
+        });
+        setEvents(events); // Revert optimistic update
+      }
+    },
+    [userId, events]
+  );
+
+  // Handle event resize
+  const onEventResize = useCallback(
+    async ({ event, start, end }: { event: any; start: stringOrDate; end: stringOrDate }) => {
+      if (!userId || (event.resource as { type?: string }).type === "task") return;
+
+      const startDate = start instanceof Date ? start : new Date(start);
+      const endDate = end instanceof Date ? end : new Date(end);
+
+      try {
+        const { error } = await supabase
+          .from("calendar_events")
+          .update({
+            date: format(start, "yyyy-MM-dd"),
+            startTime: format(start, "HH:mm"),
+            endTime: format(end, "HH:mm"),
+          })
+          .eq("id", event.id)
+          .eq("user_id", userId);
+
+        if (error) throw error;
+
+        toast({ title: "Event Resized", description: `"${event.title}" has been resized.` });
+        fetchEventsAndTasks(); // Refresh
+      } catch (error: any) {
+        toast({
+          title: "Resize Failed",
+          description: error.message,
+          variant: "destructive"
+        });
+      }
+    },
+    [userId]
+  );
+
+  // Event prop getter for styling
+  const eventPropGetter = useCallback((event: any) => ({
+    style: {
+      backgroundColor: event.color || "#2660ff",
+      borderRadius: "5px",
+      opacity: 0.9,
+      color: "white",
+      border: "1px solid #2660ff",
+    },
+  }), []);
+
+  // Navigate calendar view
+  const navigate = (action: "PREV" | "NEXT" | "TODAY") => {
+    let newDate = new Date(currentDate);
+
+    switch (action) {
+      case "PREV":
+        calendarView === "month"
+          ? newDate.setMonth(newDate.getMonth() - 1)
+          : calendarView === "week"
+          ? newDate.setDate(newDate.getDate() - 7)
+          : newDate.setDate(newDate.getDate() - 1);
+        break;
+      case "NEXT":
+        calendarView === "month"
+          ? newDate.setMonth(newDate.getMonth() + 1)
+          : calendarView === "week"
+          ? newDate.setDate(newDate.getDate() + 7)
+          : newDate.setDate(newDate.getDate() + 1);
+        break;
+      case "TODAY":
+        newDate = new Date();
+        break;
+    }
+
+    setCurrentDate(newDate);
+  };
+
+  // Get current calendar title
+  const getCalendarTitle = () => {
+    switch (calendarView) {
+      case "month":
+        return format(currentDate, "MMMM yyyy");
+      case "week": {
+        const weekStart = startOfWeek(currentDate, { weekStartsOn: 0 });
+        const weekEnd = startOfWeek(currentDate, { weekStartsOn: 0 });
+        return `${format(weekStart, "MMM d")} - ${format(weekEnd, "MMM d, yyyy")}`;
+      }
+      case "day":
+        return format(currentDate, "EEEE, MMMM d, yyyy");
+      default:
+        return "";
+    }
+  };
+
+  // Handle event selection
+  const handleSelectEvent = (event: object, e: React.SyntheticEvent<HTMLElement>) => {
+    const calEvent = event as BigCalendarEvent;
+    setSelectedEvent(calEvent);
+    setCanEdit(true); // Replace with real permission logic
+    router.push(`/calendar/${calEvent.id}`);
+  };
+
+  // Reset form fields
+  const resetNewEvent = () => {
+    setNewEvent({
+      title: "",
+      date: format(currentDate, "yyyy-MM-dd"),
+      startTime: "09:00",
+      endTime: "10:00",
+      description: "",
+      type: "meeting",
+      location: "",
+      color: "#2660ff",
+      client_name: "",
+    });
+  };
+
+  // Handle input changes in modal
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const { id, value } = e.target;
+    setNewEvent(prev => ({ ...prev, [id]: value }));
+  };
+
+  // Create new event
   const handleCreateNewEvent = async () => {
-    const startDate = new Date(`${newEvent.date}T${newEvent.startTime}`)
-    const endDate = new Date(`${newEvent.date}T${newEvent.endTime}`)
+    if (!userId) {
+      toast({ title: "Error", description: "User not authenticated.", variant: "destructive" });
+      return;
+    }
 
-    if (startDate >= endDate) {
-      toast({
-        title: "Invalid Time",
-        description: "Start time must be before end time.",
-        variant: "destructive",
-      })
-      return
+    if (!newEvent.title || !newEvent.date || !newEvent.startTime || !newEvent.endTime) {
+      toast({ title: "Missing Information", description: "Please fill out all required fields", variant: "destructive" });
+      return;
     }
 
     try {
-      const { error } = await supabase.from("calendar_events").insert([
-        {
+      const { data, error } = await supabase
+        .from("calendar_events")
+        .insert({
           title: newEvent.title,
+          date: newEvent.date,
+          startTime: newEvent.startTime,
+          endTime: newEvent.endTime,
           description: newEvent.description,
-          date: startDate.toISOString(),
-          end_time: endDate.toISOString(),
-          client_name: newEvent.client_name,
           type: newEvent.type,
           location: newEvent.location,
-          source: newEvent.source,
           color: newEvent.color,
-        },
-      ])
+          user_id: userId,
+        })
+        .select()
+        .single();
 
-      if (error) {
-        throw error
-      }
+      if (error) throw error;
 
-      setOpenAddEventModal(false)
-      setNewEvent({
-        title: "",
-        date: format(selectedDate, "yyyy-MM-dd"),
-        startTime: "09:00",
-        endTime: "10:00",
-        description: "",
-        type: "meeting",
-        location: "",
-        color: "#2660ff",
-        client_name: "",
-        source: "Manual",
-      })
-
-      toast({
-        title: "Success",
-        description: `Event "${newEvent.title}" created.`,
-      })
-
-      fetchEvents()
-      fetchTasksForCalendar()
-    } catch (err: any) {
-      console.error("Error creating event:", err)
-      toast({
-        title: "Error",
-        description: `Failed to create event: ${err.message}`,
-        variant: "destructive",
-      })
+      toast({ title: "Event Created", description: "Your event has been successfully created." });
+      setOpenAddEventModal(false);
+      resetNewEvent();
+      fetchEventsAndTasks();
+    } catch (error: any) {
+      console.error("Error creating event:", error.message);
+      toast({ title: "Error creating event", description: error.message, variant: "destructive" });
     }
-  }
+  };
 
-  const handleEditEventClick = (event: CalendarEvent) => {
-    const eventDate = new Date(event.date)
-    const eventEndTime = event.endTime ? new Date(event.endTime) : new Date(event.date)
-
-    setNewEvent({
-      title: event.title,
-      description: event.description || "",
-      date: isValidDate(eventDate) ? format(eventDate, "yyyy-MM-dd") : "",
-      startTime: isValidDate(eventDate) ? format(eventDate, "HH:mm:ss") : "09:00",
-      endTime: isValidDate(eventEndTime) ? format(eventEndTime, "HH:mm:ss") : "10:00",
-      client_name: event.client_name || "",
-      type: event.type || "meeting",
-      location: event.location || "",
-      color: event.color || "#2660ff",
-      source: event.source || "Manual",
-    })
-
-    setClientSearchTerm(event.client_name || "")
-    setSelectedEvent(event)
-    setOpenAddEventModal(true)
-  }
-
+  // Update existing event
   const handleUpdateEvent = async () => {
-    if (!selectedEvent || !newEvent) return
-
-    const startDate = new Date(`${newEvent.date}T${newEvent.startTime}`)
-    const endDate = new Date(`${newEvent.date}T${newEvent.endTime}`)
-
-    if (!isValidDate(startDate) || !isValidDate(endDate)) {
-      toast({
-        title: "Invalid Date",
-        description: "Could not update event due to invalid date format.",
-        variant: "destructive",
-      })
-      return
+    if (!userId || !selectedEvent?.resource.id) {
+      toast({ title: "Error", description: "No event selected or user not authenticated", variant: "destructive" });
+      return;
     }
+
+    const isTask = (selectedEvent.resource as { type?: string }).type === "task";
+    const tableName = isTask ? "tasks" : "calendar_events";
+    const recordId = isTask ? Math.abs(selectedEvent.id) : selectedEvent.id;
+
+    const updateData = isTask
+      ? { title: newEvent.title, due_date: newEvent.date }
+      : {
+          title: newEvent.title,
+          date: newEvent.date,
+          startTime: newEvent.startTime,
+          endTime: newEvent.endTime,
+          description: newEvent.description,
+          type: newEvent.type,
+          location: newEvent.location,
+          color: newEvent.color,
+        };
 
     try {
       const { error } = await supabase
-        .from("calendar_events")
-        .update({
-          title: newEvent.title,
-          description: newEvent.description,
-          date: startDate.toISOString(),
-          end_time: endDate.toISOString(),
-          client_name: newEvent.client_name,
-          type: newEvent.type,
-          location: newEvent.location,
-          source: newEvent.source,
-          color: newEvent.color,
-        })
-        .eq("id", selectedEvent.id)
+        .from(tableName)
+        .update(updateData)
+        .eq("id", recordId)
+        .eq("user_id", userId);
 
-      if (error) {
-        throw error
-      }
+      if (error) throw error;
 
-      toast({
-        title: "Success",
-        description: `Event "${newEvent.title}" updated.`,
-      })
-
-      setOpenAddEventModal(false)
-      setNewEvent({
-        title: "",
-        date: format(selectedDate, "yyyy-MM-dd"),
-        startTime: "09:00",
-        endTime: "10:00",
-        description: "",
-        type: "meeting",
-        location: "",
-        color: "#2660ff",
-        client_name: "",
-        source: "Manual",
-      })
-      setSelectedEvent(null)
-      fetchEvents()
-    } catch (err: any) {
-      console.error("Error updating event:", err)
-      toast({
-        title: "Error",
-        description: `Failed to update event: ${err.message}`,
-        variant: "destructive",
-      })
+      toast({ title: "Event Updated", description: "Your event has been successfully updated." });
+      setOpenAddEventModal(false);
+      setSelectedEvent(null);
+      resetNewEvent();
+      fetchEventsAndTasks();
+    } catch (error: any) {
+      console.error("Error updating event:", error.message);
+      toast({ title: "Error updating event", description: error.message, variant: "destructive" });
     }
-  }
+  };
 
+  // Delete event
   const handleDeleteEvent = async () => {
-    if (!selectedEvent) return
+    if (!userId || !selectedEvent?.resource.id) {
+      toast({ title: "Error", description: "No event selected for deletion or user not authenticated", variant: "destructive" });
+      return;
+    }
+
+    const isTask = (selectedEvent.resource as { type?: string }).type === "task";
+    const tableName = isTask ? "tasks" : "calendar_events";
+    const recordId = isTask ? Math.abs(selectedEvent.id) : selectedEvent.id;
 
     try {
-      const { error } = await supabase.from("calendar_events").delete().eq("id", selectedEvent.id)
+      const { error } = await supabase
+        .from(tableName)
+        .delete()
+        .eq("id", recordId)
+        .eq("user_id", userId);
 
-      if (error) {
-        throw error
-      }
+      if (error) throw error;
 
-      toast({
-        title: "Success",
-        description: `Event "${selectedEvent.title}" deleted.`,
-      })
-
-      setSelectedEvent(null)
-      setOpenAddEventModal(false)
-      fetchEvents()
-    } catch (err: any) {
-      console.error("Error deleting event:", err)
-      toast({
-        title: "Error",
-        description: `Failed to delete event: ${err.message}`,
-        variant: "destructive",
-      })
+      toast({ title: "Event Deleted", description: "The event has been successfully deleted." });
+      setOpenAddEventModal(false);
+      setSelectedEvent(null);
+      resetNewEvent();
+      fetchEventsAndTasks();
+    } catch (error: any) {
+      console.error("Error deleting event:", error.message);
+      toast({ title: "Error deleting event", description: error.message, variant: "destructive" });
     }
-  }
+  };
 
-  const renderWeekView = () => (
-    <Card className="col-span-2">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle>Week of {format(currentWeek, "MMMM d yyyy")}</CardTitle>
-        <div className="flex items-center space-x-2">
-          <Button variant="outline" size="icon" onClick={navigatePrevious}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button variant="outline" size="icon" onClick={navigateNext}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-7 gap-1 mb-4 border-b pb-2">
-          {weekDays.map((day, i) => (
-            <div key={i} className="text-xs text-muted-foreground text-center">
-              <div>{format(day, "EEE")}</div>
-              <div className="text-sm">{format(day, "d")}</div>
-            </div>
-          ))}
-        </div>
+  // Handle view changes
+  const handleViewChange = (view: string) => {
+    setCalendarView(view as "month" | "week" | "day");
+  };
 
-        <ScrollArea className="h-[500px] mt-4">
-          <div className="relative">
-            {timeSlots.map((hour) => (
-              <div key={hour} className="grid grid-cols-7 border-t h-16">
-                <div className="text-right pr-2 text-xs text-muted-foreground flex items-center justify-end">
-                  {hour % 12 === 0 ? 12 : hour % 12}
-                  {hour < 12 ? "am" : "pm"}
-                </div>
-                {weekDays.map((day, index) => {
-                  const dayEvents = getEventsForDay(day).filter((event) => new Date(event.date).getHours() === hour)
-
-                  return (
-                    <div key={index} className="h-16 border-l relative p-1">
-                      {dayEvents.length > 0 && (
-                        <div
-                          className="absolute inset-x-1 rounded-md p-1 text-xs text-white overflow-hidden cursor-pointer"
-                          style={{
-                            top: "4px",
-                            height: "calc(100% - 8px)",
-                            backgroundColor: dayEvents[0].color,
-                          }}
-                          onClick={() => handleEditEventClick(dayEvents[0])}
-                        >
-                          <div className="font-medium">{dayEvents[0].title}</div>
-                          <div>
-                            {format(new Date(dayEvents[0].date), "h:mm a")} -{" "}
-                            {format(new Date(dayEvents[0].endTime), "h:mm a")}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-          </div>
-        </ScrollArea>
-      </CardContent>
-    </Card>
-  )
-
-  const renderMonthView = () => (
-    <Card className="col-span-2">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle>{format(currentMonth, "MMMM yyyy")}</CardTitle>
-        <div className="flex items-center space-x-2">
-          <Button variant="outline" size="icon" onClick={navigatePrevious}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button variant="outline" size="icon" onClick={navigateNext}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-7 gap-1">
-          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((dayName, idx) => (
-            <div key={idx} className="text-center text-xs font-medium text-muted-foreground">
-              {dayName}
-            </div>
-          ))}
-
-          {monthDays.map((day) => {
-            const dayEvents = getEventsForDay(day)
-            const hasEvents = dayEvents.length > 0
-
-            return (
-              <div
-                key={day.toISOString()}
-                className={`text-center p-2 font-medium cursor-pointer rounded-md ${
-                  isSameDay(day, selectedDate)
-                    ? "bg-[#2660ff] text-white"
-                    : isSameDay(day, new Date())
-                      ? "font-bold"
-                      : hasEvents
-                        ? "bg-gray-100 dark:bg-gray-800"
-                        : "hover:bg-gray-100 dark:hover:bg-gray-800"
-                }`}
-                onClick={() => selectDay(day)}
-              >
-                <div>{format(day, "d")}</div>
-                {hasEvents && <div className="w-1 h-1 mx-auto mt-1 rounded-full bg-blue-500"></div>}
-              </div>
-            )
-          })}
-        </div>
-      </CardContent>
-    </Card>
-  )
-
-  const renderDayView = () => {
-    const dayEvents = getEventsForDay(currentDay)
-    const allDayEvents = dayEvents.filter((event) => {
-      const eventStart = new Date(event.date)
-      const eventEnd = event.endTime ? new Date(event.endTime) : eventStart
-      const start = startOfDay(currentDay)
-      const end = endOfDay(currentDay)
-
-      return eventStart >= start && eventEnd <= end
-    })
-
-    const timedEvents = dayEvents.filter((event) => !allDayEvents.includes(event))
-
-    const getHourEventsWithLayout = (hour: number) => {
-      const hourStart = new Date(currentDay)
-      hourStart.setHours(hour, 0, 0, 0)
-      const hourEnd = new Date(currentDay)
-      hourEnd.setHours(hour + 1, 0, 0, 0)
-
-      const eventsInHour = timedEvents.filter((event) => {
-        const eventStart = new Date(event.date)
-        const eventEnd = event.endTime ? new Date(event.endTime) : eventStart
-        return eventStart < hourEnd && eventEnd > hourStart
-      })
-
-      if (eventsInHour.length === 0) return []
-
-      const layouts: Record<number, { column: number; totalColumns: number }> = {}
-      const columns: Date[] = []
-
-      eventsInHour.forEach((event) => {
-        let placed = false
-        const eventStart = new Date(event.date)
-        const eventEnd = event.endTime ? new Date(event.endTime) : eventStart
-
-        for (let i = 0; i < columns.length; i++) {
-          if (eventStart >= columns[i]) {
-            layouts[event.id] = { column: i, totalColumns: columns.length }
-            columns[i] = eventEnd
-            placed = true
-            break
-          }
-        }
-
-        if (!placed) {
-          layouts[event.id] = { column: columns.length, totalColumns: columns.length + 1 }
-          columns.push(eventEnd)
-        }
-      })
-
-      return eventsInHour.map((event) => {
-        const eventStart = new Date(event.date)
-        const eventEnd = event.endTime ? new Date(event.endTime) : eventStart
-        const startMinutes = (eventStart.getHours() - 8) * 60 + eventStart.getMinutes()
-        const durationMinutes =
-          (eventEnd.getHours() - eventStart.getHours()) * 60 + (eventEnd.getMinutes() - eventStart.getMinutes())
-
-        const topRatio = startMinutes / (11 * 60)
-        const heightRatio = durationMinutes / (11 * 60)
-        const layout = layouts[event.id]
-        const totalColumns = layout?.totalColumns || 1
-        const column = layout?.column || 0
-        const eventWidthPercentage = 100 / totalColumns
-        const horizontalOffsetPercentage = column * eventWidthPercentage
-
-        return {
-          ...event,
-          layout: {
-            top: `${topRatio * 100}%`,
-            height: `calc(${heightRatio * 100}% - 2px)`,
-            left: `${horizontalOffsetPercentage}%`,
-            width: `calc(${eventWidthPercentage}% - 2px)`,
-          },
-        }
-      })
-    }
-
-    return (
-      <Card className="col-span-2">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle>{format(currentDay, "EEEE, MMMM d, yyyy")}</CardTitle>
-          <div className="flex items-center space-x-2">
-            <Button variant="outline" size="icon" onClick={navigatePrevious}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={navigateNext}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {allDayEvents.length > 0 && (
-            <div className="mb-4">
-              <h3 className="text-sm font-medium mb-2">All Day Events</h3>
-              <div className="space-y-1">
-                {allDayEvents.map((event) => (
-                  <div
-                    key={event.id}
-                    className="p-2 rounded-md text-white text-sm cursor-pointer"
-                    style={{ backgroundColor: event.color }}
-                    onClick={() => handleEditEventClick(event)}
-                  >
-                    {event.title}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <ScrollArea className="h-[500px]">
-            <div className="relative">
-              {timeSlots.map((hour) => {
-                const hourEventsWithLayout = getHourEventsWithLayout(hour)
-
-                return (
-                  <div key={hour} className="relative h-16 border-t">
-                    <div className="absolute left-0 top-0 text-right pr-2 text-xs text-muted-foreground w-16 flex items-center justify-end h-full">
-                      {hour % 12 === 0 ? 12 : hour % 12}
-                      {hour < 12 ? "am" : "pm"}
-                    </div>
-                    <div className="ml-16 relative h-full border-l">
-                      {hourEventsWithLayout.map((event) => (
-                        <div
-                          key={event.id}
-                          className="absolute rounded-md p-1 text-xs text-white overflow-hidden cursor-pointer"
-                          style={{
-                            top: event.layout.top,
-                            height: event.layout.height,
-                            left: event.layout.left,
-                            width: event.layout.width,
-                            backgroundColor: event.color,
-                          }}
-                          onClick={() => handleEditEventClick(event)}
-                        >
-                          <div className="font-medium">{event.title}</div>
-                          <div>
-                            {format(new Date(event.date), "h:mm a")} - {format(new Date(event.endTime), "h:mm a")}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const renderCalendarView = () => {
-    if (calendarView === "week") return renderWeekView()
-    if (calendarView === "month") return renderMonthView()
-    if (calendarView === "day") return renderDayView()
-    return renderWeekView()
-  }
-
-  useEffect(() => {
-    fetchEvents()
-    fetchTasksForCalendar()
-    fetchClients()
-  }, [])
-
-  useEffect(() => {
-    if (clientSearchTerm) {
-      fetchClients()
-    }
-  }, [clientSearchTerm])
+  // Wrap BigCalendar with DragAndDrop conditionally
+  const DnDCalendar = withDragAndDrop ? withDragAndDrop(BigCalendar) : BigCalendar;
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold tracking-tight">Calendar</h1>
-        <div className="flex items-center space-x-2">
-          <Button onClick={() => setOpenAddEventModal(true)}>Add Event</Button>
-          <Button variant="outline" size="icon" onClick={navigatePrevious}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button variant="outline" size="icon" onClick={navigateNext}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
+    <div className="flex flex-col lg:flex-row space-y-6 lg:space-y-0 lg:space-x-6 p-6 h-full">
+      {/* Calendar */}
+      <div className="w-full lg:w-3/4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-2xl font-bold">{getCalendarTitle()}</CardTitle>
+            <div className="flex items-center space-x-2">
+              <Button variant="outline" size="icon" onClick={() => navigate("PREV")}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" onClick={() => navigate("TODAY")}>
+                Today
+              </Button>
+              <Button variant="outline" size="icon" onClick={() => navigate("NEXT")}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Tabs value={calendarView} onValueChange={(v) => handleViewChange(v as "month" | "week" | "day")}>
+                <TabsList>
+                  <TabsTrigger value="day">Day</TabsTrigger>
+                  <TabsTrigger value="week">Week</TabsTrigger>
+                  <TabsTrigger value="month">Month</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            </CardHeader>
+          <CardContent>
+            {DnDCalendar && (
+              <DnDCalendar
+                localizer={localizer}
+                events={events}
+                startAccessor={(event: any) => new Date(event.start)}
+                endAccessor={(event: any) => new Date((event as BigCalendarEvent).end)}
+                views={["month", "week", "day"]}
+                view={calendarView}
+                date={currentDate}
+                onNavigate={setCurrentDate}
+                onView={handleViewChange}
+                onSelectEvent={handleSelectEvent}
+                onSelectSlot={() => {}}
+                eventPropGetter={eventPropGetter}
+                selectable
+                resizable
+                onEventDrop={onEventDrop}
+                onEventResize={onEventResize}
+                style={{ height: "calc(100vh - 200px)" }}
+              />
+            )}
+          </CardContent>
+        </Card>
       </div>
 
-      <div className="space-y-4">
-        <Tabs value={calendarView} onValueChange={(value) => setCalendarView(value as CalendarView)}>
-          <TabsList className="justify-start ml-1">
-            <TabsTrigger value="week">Week</TabsTrigger>
-            <TabsTrigger value="month">Month</TabsTrigger>
-            <TabsTrigger value="day">Day</TabsTrigger>
-          </TabsList>
-          <TabsContent value="week" className="m-0 p-0">
-            {renderWeekView()}
-          </TabsContent>
-          <TabsContent value="month" className="m-0 p-0">
-            {renderMonthView()}
-          </TabsContent>
-          <TabsContent value="day" className="m-0 p-0">
-            {renderDayView()}
-          </TabsContent>
-        </Tabs>
-
-        <div className="mt-8">
-          <h2 className="text-xl font-semibold mb-4">Today's Events</h2>
-          <ScrollArea className="max-h-[400px]">
-            <div className="grid gap-2">
-              {getEventsForDay(currentDay).length > 0 ? (
-                getEventsForDay(currentDay).map((event) => (
-                  <Card
-                    key={event.id}
-                    className="p-3 hover:shadow-md transition-shadow cursor-pointer"
-                    onClick={() => handleEditEventClick(event)}
-                  >
-                    <CardTitle className="text-sm font-medium">{event.title}</CardTitle>
-                    <CardDescription className="text-xs mt-1">
-                      {format(new Date(event.date), "h:mm a")} -{" "}
-                      {event.endTime ? format(new Date(event.endTime), "h:mm a") : ""}
-                    </CardDescription>
-                  </Card>
-                ))
-              ) : (
-                <p>No events scheduled for today.</p>
-              )}
-            </div>
-          </ScrollArea>
-        </div>
+      {/* Today's Events Panel */}
+      <div className="w-full lg:w-1/4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Today's Events</CardTitle>
+            <CardDescription>Events scheduled for today.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {todayEvents.length > 0 ? (
+              <ScrollArea className="h-[400px] pr-4">
+                <ul className="space-y-4">
+                  {todayEvents.map((event) => (
+                    <li key={event.id} className="border-b pb-2">
+                      <h3 className="font-medium">{event.title}</h3>
+                      <p className="text-sm text-gray-500">
+                        {isValid(event.start) && isValid(event.end) ? (
+                          <>
+                            {format(event.start, "hh:mm a")} – {format(event.end, "hh:mm a")}
+                          </>
+                        ) : (
+                          "Invalid date"
+                        )}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </ScrollArea>
+            ) : (
+              <p className="text-sm text-muted-foreground">No events or tasks for today.</p>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Add/Edit Event Modal */}
-      <Dialog open={openAddEventModal} onOpenChange={setOpenAddEventModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{selectedEvent ? "Edit Event" : "Add New Event"}</DialogTitle>
-            <DialogDescription>Create or edit an event for your calendar.</DialogDescription>
-          </DialogHeader>
+      <AlertDialog open={openAddEventModal} onOpenChange={setOpenAddEventModal}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{selectedEvent ? "Edit Event" : "Add New Event"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {selectedEvent ? "Modify your event details below" : "Enter details for your new event"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="title" className="text-right">
-                Title
-              </Label>
-              <Input id="title" value={newEvent.title} onChange={handleInputChange} className="col-span-3" />
+              <Label htmlFor="title" className="text-right">Title</Label>
+              <Input
+                id="title"
+                value={newEvent.title}
+                onChange={handleInputChange}
+                placeholder="Event title"
+                className="col-span-3"
+              />
             </div>
+
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="date" className="text-right">
-                Date
-              </Label>
-              <Input id="date" type="date" value={newEvent.date} onChange={handleInputChange} className="col-span-3" />
+              <Label htmlFor="date" className="text-right">Date</Label>
+              <Input
+                id="date"
+                type="date"
+                value={newEvent.date}
+                onChange={handleInputChange}
+                className="col-span-3"
+              />
             </div>
+
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="startTime" className="text-right">
-                Start Time
-              </Label>
+              <Label htmlFor="startTime" className="text-right">Start Time</Label>
               <Input
                 id="startTime"
                 type="time"
@@ -843,10 +624,9 @@ export default function CalendarPage() {
                 className="col-span-3"
               />
             </div>
+
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="endTime" className="text-right">
-                End Time
-              </Label>
+              <Label htmlFor="endTime" className="text-right">End Time</Label>
               <Input
                 id="endTime"
                 type="time"
@@ -855,51 +635,20 @@ export default function CalendarPage() {
                 className="col-span-3"
               />
             </div>
+
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="client_name" className="text-right">
-                Client
-              </Label>
-              <div className="col-span-3 relative">
-                <Input
-                  id="client_name"
-                  value={newEvent.client_name}
-                  onChange={handleInputChange}
-                  onFocus={() => setShowClientSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowClientSuggestions(false), 200)}
-                  placeholder="Search or enter client name"
-                  className="col-span-3"
-                />
-                {showClientSuggestions && allClients.length > 0 && (
-                  <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border shadow-md max-h-40 overflow-y-auto">
-                    {allClients
-                      .filter((client) => client.name.toLowerCase().includes(clientSearchTerm.toLowerCase()))
-                      .map((client) => (
-                        <div
-                          key={client.id}
-                          className="p-2 hover:bg-accent cursor-pointer"
-                          onClick={() => {
-                            setNewEvent((prev) => ({ ...prev, client_name: client.name }))
-                            setClientSearchTerm(client.name)
-                            setShowClientSuggestions(false)
-                          }}
-                        >
-                          {client.name}
-                        </div>
-                      ))}
-                  </div>
-                )}
-              </div>
+              <Label htmlFor="location" className="text-right">Location</Label>
+              <Input
+                id="location"
+                value={newEvent.location}
+                onChange={handleInputChange}
+                placeholder="Optional"
+                className="col-span-3"
+              />
             </div>
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="type" className="text-right">
-                Type
-              </Label>
-              <Input id="type" value={newEvent.type} onChange={handleInputChange} className="col-span-3" />
-            </div>
+
             <div className="grid grid-cols-4 items-start gap-4">
-              <Label htmlFor="description" className="text-right">
-                Description
-              </Label>
+              <Label htmlFor="description" className="text-right pt-2">Description</Label>
               <Textarea
                 id="description"
                 value={newEvent.description}
@@ -908,52 +657,26 @@ export default function CalendarPage() {
                 className="col-span-3"
               />
             </div>
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="color" className="text-right">
-                Color
-              </Label>
-              <input
-                id="color"
-                type="color"
-                value={newEvent.color}
-                onChange={handleInputChange}
-                className="w-full h-8 col-span-3"
-              />
-            </div>
           </div>
-          <DialogFooter>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setOpenAddEventModal(false)
-                setSelectedEvent(null)
-                setNewEvent({
-                  title: "",
-                  date: format(selectedDate, "yyyy-MM-dd"),
-                  startTime: "09:00",
-                  endTime: "10:00",
-                  description: "",
-                  type: "meeting",
-                  location: "",
-                  color: "#2660ff",
-                  client_name: "",
-                  source: "Manual",
-                })
-              }}
-            >
+
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => {
+              setSelectedEvent(null);
+              resetNewEvent();
+            }}>
               Cancel
-            </Button>
-            <Button onClick={selectedEvent ? handleUpdateEvent : handleCreateNewEvent}>
-              {selectedEvent ? "Save Changes" : "Create Event"}
-            </Button>
+            </AlertDialogCancel>
             {selectedEvent && (
-              <Button variant="destructive" onClick={handleDeleteEvent}>
-                Delete
-              </Button>
+              <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={handleDeleteEvent}>
+                <Trash2 className="mr-2 h-4 w-4" /> Delete
+              </AlertDialogAction>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <Button onClick={selectedEvent ? handleUpdateEvent : handleCreateNewEvent}>
+              <Save className="mr-2 h-4 w-4" /> {selectedEvent ? "Update" : "Create"} Event
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
-  )
+  );
 }

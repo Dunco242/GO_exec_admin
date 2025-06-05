@@ -1,23 +1,26 @@
-"use client"
+"use client";
 
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Calendar, Mail, Users, CheckSquare, BarChart3, Bell, Settings, LogOut, FileUp, Menu, FileText } from "lucide-react" // Import FileText icon
+// Import FolderKanban icon for Projects and FilePlus for Invoices
+import { Calendar, Mail, Users, CheckSquare, BarChart3, Bell, Settings, LogOut, FileUp, Menu, FileText, FolderKanban, FilePlus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { supabase } from '@/lib/supabaseClient';
-import { useState, useEffect } from 'react'; // Import useEffect and useState
+import { useState, useEffect } from 'react';
 
 const navItems = [
     { name: "Dashboard", href: "/", icon: BarChart3 },
     { name: "Calendar", href: "/calendar", icon: Calendar },
     { name: "Email", href: "/email", icon: Mail },
     { name: "Clients", href: "/clients", icon: Users },
+    { name: "Projects", href: "/projects", icon: FolderKanban }, // Added Projects tab
+    { name: "Invoices", href: "/invoices", icon: FilePlus },     // Added Invoices tab
     { name: "Tasks", href: "/tasks", icon: CheckSquare },
-    { name: "Documents", href: "/documents", icon: FileText }, // Added Documents tab
-    { name: "Import", href: "/import", icon: FileUp },
+    { name: "Documents", href: "/documents", icon: FileText },
+    { name: "Notes", href: "/notes", icon: FileText }, // Added Notes tab
     { name: "Notifications", href: "/notifications", icon: Bell },
     { name: "Settings", href: "/settings", icon: Settings },
 ]
