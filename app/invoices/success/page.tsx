@@ -1,4 +1,5 @@
 // app/invoices/success/page.tsx
+"use client";
 import React from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
