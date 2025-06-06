@@ -1,9 +1,10 @@
+// app/invoices/page.tsx
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import { useToast } from "@/hooks/use-toast";
+import { useToast } from "@/hooks/use-toast"; // Keep this as a hook import
 import {
   Card,
   CardHeader,
@@ -88,7 +89,7 @@ export default function InvoiceListPage() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { toast } = useToast();
+  const { toast } = useToast(); // useToast as a hook
 
   const getCurrentUserId = async () => {
     const { data: { user }, error } = await supabase.auth.getUser();
@@ -105,6 +106,7 @@ export default function InvoiceListPage() {
       setLoading(false);
       return;
     }
+    setCurrentUserId(userId); // Ensure userId is set for modal and other uses
 
     try {
       const { data, error } = await supabase
@@ -175,7 +177,7 @@ export default function InvoiceListPage() {
       }
       fetchInvoices(); // Refresh list
     }
-  }, [searchParams, router]);
+  }, [searchParams, router, toast]); // Add toast to dependency array
 
   // Generate chart data
   const chartData = useMemo(() => {
@@ -216,6 +218,8 @@ export default function InvoiceListPage() {
 
   // ✅ Move PayPal integration into a dynamically imported component
   const handlePaypalPayment = (invoice: Invoice) => {
+    // Pass the toast function itself to initPayPal if it's not globally available
+    // or if initPayPal handles toast directly.
     import("lib/paypal").then(({ initPayPal }) => {
       initPayPal(invoice, fetchInvoices, router);
     });
@@ -223,7 +227,24 @@ export default function InvoiceListPage() {
 
   useEffect(() => {
     fetchInvoices();
-  }, []);
+  }, []); // userId is already handled within fetchInvoices
+
+  // Render logic for loading and unauthenticated states
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <p>Loading invoices...</p>
+      </div>
+    );
+  }
+
+  if (!currentUserId && !loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <p className="text-lg text-gray-600">Please log in to view your invoices.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -366,7 +387,7 @@ export default function InvoiceListPage() {
             </DialogDescription>
           </DialogHeader>
           {currentUserId && (
-            <InvoiceSettingsModal onClose={() => setShowSettingsModal(false)} userId={""} />
+            <InvoiceSettingsModal onClose={() => setShowSettingsModal(false)} userId={currentUserId} />
           )}
         </DialogContent>
       </Dialog>

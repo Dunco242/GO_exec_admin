@@ -1,16 +1,18 @@
 // app/invoices/success/page.tsx
 import React from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function SuccessPage() {
-  // This page doesn't use useRouter or useSearchParams to avoid prerender errors
-  // Invoice ID can be passed via router.push('/invoices/success?invoice_id=123') from client-side only
+// Use dynamic import to disable SSR for this component
+const SuccessContent = () => {
+  const searchParams = useSearchParams();
+  const invoiceId = searchParams.get("invoice_id");
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-900 px-4">
       <div className="text-center max-w-md w-full p-6 bg-white dark:bg-gray-800 rounded-lg shadow-md">
         <div className="mb-4 flex justify-center">
-          {/* You can replace this with your own SVG icon if needed */}
+          {/* Simple SVG icon */}
           <svg
             xmlns="http://www.w3.org/2000/svg"
             width="64"
@@ -33,12 +35,14 @@ export default function SuccessPage() {
         </h1>
 
         <p className="text-gray-600 dark:text-gray-300 mb-6">
-          Thank you for your payment. Your invoice has been processed.
+          Your payment has been processed successfully.
         </p>
 
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-          Note: For security reasons, invoice details are not shown here unless accessed directly from the app.
-        </p>
+        {invoiceId && (
+          <p className="text-gray-700 dark:text-gray-200 mb-6">
+            Invoice ID: <strong>{invoiceId}</strong>
+          </p>
+        )}
 
         <Link href="/invoices">
           <button className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md transition-colors">
@@ -47,5 +51,13 @@ export default function SuccessPage() {
         </Link>
       </div>
     </div>
+  );
+};
+
+export default function SuccessPage() {
+  return (
+    <React.Suspense fallback="Loading...">
+      <SuccessContent />
+    </React.Suspense>
   );
 }
