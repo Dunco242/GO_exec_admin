@@ -1,7 +1,7 @@
 // app/invoices/page.tsx
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, Suspense } from "react"; // Added Suspense
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { useToast } from "@/hooks/use-toast"; // Keep this as a hook import
@@ -73,7 +73,7 @@ interface Invoice {
   project_id: number | null;
   user_id: string;
   currency?: string | null;
-  client: { name: string } | null; // Now correctly accessing client.name
+  client: { name: string } | null;
 }
 
 interface ChartData {
@@ -87,9 +87,9 @@ export default function InvoiceListPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { toast } = useToast(); // useToast as a hook
+  const router = useRouter(); // Client-side hook
+  const searchParams = useSearchParams(); // Client-side hook
+  const { toast } = useToast();
 
   const getCurrentUserId = async () => {
     const { data: { user }, error } = await supabase.auth.getUser();
@@ -149,6 +149,8 @@ export default function InvoiceListPage() {
 
   // Handle payment status from URL parameters after PayPal redirect
   useEffect(() => {
+    // These hooks are safe here because the component is within a Suspense boundary
+    // and marked "use client".
     const paymentStatus = searchParams.get("payment_status");
     const invoiceId = searchParams.get("invoice_id");
 
@@ -177,7 +179,7 @@ export default function InvoiceListPage() {
       }
       fetchInvoices(); // Refresh list
     }
-  }, [searchParams, router, toast]); // Add toast to dependency array
+  }, [searchParams, router, toast]);
 
   // Generate chart data
   const chartData = useMemo(() => {
@@ -227,7 +229,7 @@ export default function InvoiceListPage() {
 
   useEffect(() => {
     fetchInvoices();
-  }, []); // userId is already handled within fetchInvoices
+  }, []);
 
   // Render logic for loading and unauthenticated states
   if (loading) {
@@ -247,150 +249,152 @@ export default function InvoiceListPage() {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Invoices</h1>
-        <div className="flex items-center gap-4">
-          <Button asChild>
-            <Link href="/invoices/new">New Invoice</Link>
-          </Button>
-          <Button onClick={() => setShowSettingsModal(true)}>
-            <SettingsIcon className="mr-2 h-4 w-4" /> Settings
-          </Button>
+    <Suspense fallback={<div>Loading invoices...</div>}> {/* Suspense boundary added here */}
+      <div className="p-6 max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-3xl font-bold">Invoices</h1>
+          <div className="flex items-center gap-4">
+            <Button asChild>
+              <Link href="/invoices/new">New Invoice</Link>
+            </Button>
+            <Button onClick={() => setShowSettingsModal(true)}>
+              <SettingsIcon className="mr-2 h-4 w-4" /> Settings
+            </Button>
+          </div>
         </div>
-      </div>
 
-      {/* Monthly Overview Chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Monthly Invoicing Overview</CardTitle>
-          <CardDescription>
-            Paid vs Pending Invoices ({new Date().getFullYear()})
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="month" />
-              <YAxis tickFormatter={(value) => `$${value}`} />
-              <Tooltip formatter={(value) => [`$${value}`, value]} />
-              <Legend />
-              <Line type="monotone" dataKey="paid" stroke="#10B981" name="Paid" />
-              <Line type="monotone" dataKey="pending" stroke="#F59E0B" name="Pending" />
-            </LineChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+        {/* Monthly Overview Chart */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Monthly Invoicing Overview</CardTitle>
+            <CardDescription>
+              Paid vs Pending Invoices ({new Date().getFullYear()})
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" />
+                <YAxis tickFormatter={(value) => `$${value}`} />
+                <Tooltip formatter={(value) => [`$${value}`, value]} />
+                <Legend />
+                <Line type="monotone" dataKey="paid" stroke="#10B981" name="Paid" />
+                <Line type="monotone" dataKey="pending" stroke="#F59E0B" name="Pending" />
+              </LineChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
-      {/* Invoices Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Invoices</CardTitle>
-          <CardDescription>Manage your invoices here.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <p className="py-8 text-center text-gray-500 dark:text-gray-400">
-              Loading invoices...
-            </p>
-          ) : invoices.length === 0 ? (
-            <p className="py-8 text-center text-gray-500 dark:text-gray-400">
-              No invoices found.{" "}
-              <Link href="/invoices/new" className="underline">
-                Create New Invoice
-              </Link>{" "}
-              to get started.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[120px]">Invoice #</TableHead>
-                    <TableHead>Client</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Due Date</TableHead>
-                    <TableHead className="text-right">Total Amount</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {invoices.map((invoice) => (
-                    <TableRow key={invoice.id}>
-                      <TableCell className="font-medium">
-                        {invoice.invoice_number || "N/A"}
-                      </TableCell>
-                      <TableCell>{invoice.client?.name || "N/A"}</TableCell>
-                      <TableCell>
-                        {format(parseISO(invoice.invoice_date), "MMM dd, yyyy")}
-                      </TableCell>
-                      <TableCell>
-                        {invoice.due_date
-                          ? format(parseISO(invoice.due_date), "MMM dd, yyyy")
-                          : "N/A"}
-                      </TableCell>
-                      <TableCell className="text-right font-semibold">
-                        ${invoice.total_amount?.toFixed(2) || "0.00"}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                            invoice.status === "paid"
-                              ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                              : invoice.status === "pending"
-                              ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
-                              : "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
-                          }`}
-                        >
-                          {invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          {invoice.status === "pending" && (
-                            <div
-                              id={`paypal-button-container-${invoice.id}`}
-                              className="h-12 flex justify-end"
-                            >
-                              <button
-                                className="shadow-sm hover:shadow-md bg-[#0070ba] text-white hover:bg-[#005ea6] px-3 py-1 rounded-md"
-                                onClick={() => handlePaypalPayment(invoice)}
-                              >
-                                Pay with PayPal
-                              </button>
-                            </div>
-                          )}
-                          <Button size="sm" asChild>
-                            <Link href={`/invoices/${invoice.id}`}>View Details</Link>
-                          </Button>
-                        </div>
-                      </TableCell>
+        {/* Invoices Table */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Invoices</CardTitle>
+            <CardDescription>Manage your invoices here.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <p className="py-8 text-center text-gray-500 dark:text-gray-400">
+                Loading invoices...
+              </p>
+            ) : invoices.length === 0 ? (
+              <p className="py-8 text-center text-gray-500 dark:text-gray-400">
+                No invoices found.{" "}
+                <Link href="/invoices/new" className="underline">
+                  Create New Invoice
+                </Link>{" "}
+                to get started.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[120px]">Invoice #</TableHead>
+                      <TableHead>Client</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Due Date</TableHead>
+                      <TableHead className="text-right">Total Amount</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  </TableHeader>
+                  <TableBody>
+                    {invoices.map((invoice) => (
+                      <TableRow key={invoice.id}>
+                        <TableCell className="font-medium">
+                          {invoice.invoice_number || "N/A"}
+                        </TableCell>
+                        <TableCell>{invoice.client?.name || "N/A"}</TableCell>
+                        <TableCell>
+                          {format(parseISO(invoice.invoice_date), "MMM dd,yyyy")}
+                        </TableCell>
+                        <TableCell>
+                          {invoice.due_date
+                            ? format(parseISO(invoice.due_date), "MMM dd,yyyy")
+                            : "N/A"}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold">
+                          ${invoice.total_amount?.toFixed(2) || "0.00"}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                              invoice.status === "paid"
+                                ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                                : invoice.status === "pending"
+                                ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                                : "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
+                            }`}
+                          >
+                            {invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            {invoice.status === "pending" && (
+                              <div
+                                id={`paypal-button-container-${invoice.id}`}
+                                className="h-12 flex justify-end"
+                              >
+                                <button
+                                  className="shadow-sm hover:shadow-md bg-[#0070ba] text-white hover:bg-[#005ea6] px-3 py-1 rounded-md"
+                                  onClick={() => handlePaypalPayment(invoice)}
+                                >
+                                  Pay with PayPal
+                                </button>
+                              </div>
+                            )}
+                            <Button size="sm" asChild>
+                              <Link href={`/invoices/${invoice.id}`}>View Details</Link>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-      {/* Settings Modal */}
-      <Dialog open={showSettingsModal} onOpenChange={setShowSettingsModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Invoice Settings</DialogTitle>
-            <DialogDescription>
-              Configure settings related to invoices.
-            </DialogDescription>
-          </DialogHeader>
-          {currentUserId && (
-            <InvoiceSettingsModal onClose={() => setShowSettingsModal(false)} userId={currentUserId} />
-          )}
-        </DialogContent>
-      </Dialog>
-    </div>
+        {/* Settings Modal */}
+        <Dialog open={showSettingsModal} onOpenChange={setShowSettingsModal}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Invoice Settings</DialogTitle>
+              <DialogDescription>
+                Configure settings related to invoices.
+              </DialogDescription>
+            </DialogHeader>
+            {currentUserId && (
+              <InvoiceSettingsModal onClose={() => setShowSettingsModal(false)} userId={currentUserId} />
+            )}
+          </DialogContent>
+        </Dialog>
+      </div>
+    </Suspense>
   );
 }
