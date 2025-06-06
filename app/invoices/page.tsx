@@ -40,10 +40,9 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import InvoiceSettingsModal from "app/components/InvoiceSettingsModal"; // Adjust path if needed
-import { loadScript } from "@paypal/paypal-js";
 import { useRouter, useSearchParams } from "next/navigation";
 
-// Custom PayPal Button (SVG version)
+// ✅ This component will not render during `next export`
 const PayPalButton = () => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -63,11 +62,6 @@ const PayPalButton = () => (
   </svg>
 );
 
-interface Client {
-  id: number;
-  name: string;
-}
-
 interface Invoice {
   id: string;
   invoice_number: string | null;
@@ -78,7 +72,7 @@ interface Invoice {
   project_id: number | null;
   user_id: string;
   currency?: string | null;
-  client: Client | null; // ✅ Now fetching full client object
+  client: { name: string } | null; // Now correctly accessing client.name
 }
 
 interface ChartData {
@@ -92,7 +86,6 @@ export default function InvoiceListPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -164,7 +157,6 @@ export default function InvoiceListPage() {
           description: `Invoice ${invoiceId} has been marked as paid.`,
           variant: "default",
         });
-
         router.replace("/invoices");
       } else if (paymentStatus === "cancelled") {
         toast({
@@ -172,7 +164,6 @@ export default function InvoiceListPage() {
           description: `Payment for Invoice ${invoiceId} was cancelled.`,
           variant: "default",
         });
-
         router.replace("/invoices");
       } else if (paymentStatus === "error") {
         toast({
@@ -180,15 +171,13 @@ export default function InvoiceListPage() {
           description: `An error occurred during payment for Invoice ${invoiceId}.`,
           variant: "destructive",
         });
-
         router.replace("/invoices");
       }
-
-      fetchInvoices(); // Refresh invoice list
+      fetchInvoices(); // Refresh list
     }
   }, [searchParams, router]);
 
-  // Generate chart data for monthly invoicing overview
+  // Generate chart data
   const chartData = useMemo(() => {
     const currentYear = new Date().getFullYear();
     const monthlyData: Record<string, { paid: number; pending: number }> = {};
@@ -209,9 +198,9 @@ export default function InvoiceListPage() {
           const monthName = format(invoiceDate, "MMM");
           if (monthlyData[monthName]) {
             if (invoice.status === "paid") {
-              monthlyData[monthName].paid += invoice.total_amount;
+              monthlyData[monthName].paid += invoice.total_amount!;
             } else if (invoice.status === "pending") {
-              monthlyData[monthName].pending += invoice.total_amount;
+              monthlyData[monthName].pending += invoice.total_amount!;
             }
           }
         }
@@ -225,159 +214,11 @@ export default function InvoiceListPage() {
     }));
   }, [invoices]);
 
-  // PayPal Integration
-  const handlePaypalPayment = async (invoice: Invoice) => {
-    if (!invoice.total_amount) {
-      toast({
-        title: "Error",
-        description: "This invoice has no amount. Cannot proceed with payment.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const userId = await getCurrentUserId();
-    if (!userId) {
-      toast({
-        title: "Authentication Required",
-        description: "You must be logged in to make a payment.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    toast({
-      title: "Preparing Payment...",
-      description: "Please wait while we prepare your PayPal transaction.",
-      duration: 3000,
+  // ✅ Move PayPal integration into a dynamically imported component
+  const handlePaypalPayment = (invoice: Invoice) => {
+    import("lib/paypal").then(({ initPayPal }) => {
+      initPayPal(invoice, fetchInvoices, router);
     });
-
-    try {
-      const createOrderResponse = await fetch("/api/paypal/create-order", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": userId,
-        },
-        body: JSON.stringify({ invoiceId: invoice.id }),
-      });
-
-      const orderData = await createOrderResponse.json();
-
-      if (!createOrderResponse.ok || !orderData.orderId) {
-        const errorMessage = orderData?.error || "Unknown error";
-        console.error("PayPal Order Error:", orderData);
-        toast({
-          title: "Error",
-          description: `Failed to create PayPal order: ${errorMessage}`,
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const paypalOrderId = orderData.orderId;
-
-      const paypal = await loadScript({
-        clientId: "sb", // Use sandbox test account
-        currency: invoice.currency || "USD",
-      });
-
-      if (!paypal || typeof window === "undefined") {
-        throw new Error("PayPal script failed to load.");
-      }
-
-      const containerId = `#paypal-button-container-${invoice.id}`;
-      const container = document.querySelector(containerId);
-
-      if (!container) {
-        throw new Error(`Container ${containerId} not found.`);
-      }
-
-      container.innerHTML = ""; // Clear previous render
-
-      if (
-        window.paypal &&
-        typeof window.paypal.Buttons === "function" &&
-        window.paypal.FUNDING &&
-        window.paypal.FUNDING.PAYPAL
-      ) {
-        window.paypal.Buttons({
-          fundingSource: window.paypal.FUNDING.PAYPAL,
-          style: {
-            layout: "horizontal",
-            color: "gold",
-            shape: "pill",
-            label: "pay",
-          },
-          createOrder: () => {
-            return paypalOrderId;
-          },
-          onApprove: async (data: any) => {
-            try {
-              const captureResponse = await fetch("/api/paypal/capture-order", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "x-user-id": userId,
-                },
-                body: JSON.stringify({ orderId: data.orderID, invoiceId: invoice.id }),
-              });
-
-              const captureResult = await captureResponse.json();
-
-              if (!captureResponse.ok) {
-                throw new Error(captureResult.error || "Capture failed");
-              }
-
-              toast({
-                title: "Payment Captured",
-                description: `Your payment for invoice #${invoice.id} has been completed.`,
-              });
-
-              fetchInvoices(); // Refresh list
-
-              router.push(`/invoices/success?invoice_id=${invoice.id}`);
-            } catch (err: any) {
-              console.error("Error in onApprove:", err?.message);
-              toast({
-                title: "Payment Error",
-                description: typeof err?.message === "string" ? err.message : "An unexpected error occurred.",
-                variant: "destructive",
-              });
-            }
-          },
-          onCancel: () => {
-            toast({
-              title: "Payment Cancelled",
-              description: "You have cancelled the PayPal payment.",
-              variant: "default",
-            });
-          },
-          onError: (err: any) => {
-            console.error("PayPal SDK Error:", err);
-            toast({
-              title: "Payment Error",
-              description: typeof err?.message === "string" ? err.message : "An unexpected error occurred.",
-              variant: "destructive",
-            });
-          },
-        }).render(containerId);
-      } else {
-        toast({
-          title: "PayPal Error",
-          description: "PayPal SDK is not available.",
-          variant: "destructive",
-        });
-      }
-
-    } catch (err: any) {
-      console.error("Server error during PayPal payment:", err.message);
-      toast({
-        title: "Internal Server Error",
-        description: err.message,
-        variant: "destructive",
-      });
-    }
   };
 
   useEffect(() => {
@@ -399,7 +240,7 @@ export default function InvoiceListPage() {
         </div>
       </div>
 
-      {/* Charts */}
+      {/* Monthly Overview Chart */}
       <Card>
         <CardHeader>
           <CardTitle>Monthly Invoicing Overview</CardTitle>
@@ -413,7 +254,7 @@ export default function InvoiceListPage() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />
               <YAxis tickFormatter={(value) => `$${value}`} />
-              <Tooltip formatter={(value: number | string, name: string) => [`$${value}`, name]} />
+              <Tooltip formatter={(value) => [`$${value}`, value]} />
               <Legend />
               <Line type="monotone" dataKey="paid" stroke="#10B981" name="Paid" />
               <Line type="monotone" dataKey="pending" stroke="#F59E0B" name="Pending" />
@@ -461,10 +302,7 @@ export default function InvoiceListPage() {
                       <TableCell className="font-medium">
                         {invoice.invoice_number || "N/A"}
                       </TableCell>
-                      <TableCell>
-                        {invoice.client?.name || "N/A"}{" "}
-                        {/* ✅ Corrected to use client.name */}
-                      </TableCell>
+                      <TableCell>{invoice.client?.name || "N/A"}</TableCell>
                       <TableCell>
                         {format(parseISO(invoice.invoice_date), "MMM dd, yyyy")}
                       </TableCell>
@@ -486,8 +324,7 @@ export default function InvoiceListPage() {
                               : "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
                           }`}
                         >
-                          {invoice.status.charAt(0).toUpperCase() +
-                            invoice.status.slice(1)}
+                          {invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
@@ -497,20 +334,16 @@ export default function InvoiceListPage() {
                               id={`paypal-button-container-${invoice.id}`}
                               className="h-12 flex justify-end"
                             >
-                              <Button
-                                variant="outline"
-                                className="shadow-sm hover:shadow-md bg-[#0070ba] text-white hover:bg-[#005ea6]"
+                              <button
+                                className="shadow-sm hover:shadow-md bg-[#0070ba] text-white hover:bg-[#005ea6] px-3 py-1 rounded-md"
                                 onClick={() => handlePaypalPayment(invoice)}
-                                disabled={false}
                               >
-                                <PayPalButton />
-                              </Button>
+                                Pay with PayPal
+                              </button>
                             </div>
                           )}
                           <Button size="sm" asChild>
-                            <Link href={`/invoices/${invoice.id}`}>
-                              View Details
-                            </Link>
+                            <Link href={`/invoices/${invoice.id}`}>View Details</Link>
                           </Button>
                         </div>
                       </TableCell>
